@@ -45,7 +45,8 @@ if [ -x /usr/bin/time ]; then TIMER=(/usr/bin/time -v); fi
 # env -i: nothing from the caller's environment. No ALICE_* here on purpose: the probe writes them
 # into the profiles' .env files, which is what S2 observes. S2_RSS_LIMIT_MB arms the probe's own RSS
 # watchdog (it exits 137 above the limit); choom -n 1000 makes the kernel pick the probe, not the
-# live gateway, if memory still runs out. timeout 900 > boot + 5 scenarios x TURN_TIMEOUT.
+# live gateway, if memory still runs out. timeout 1200 > boot + 4 scenarios x 2 x TURN_TIMEOUT (960 s),
+# so a hung scenario is still reported by its own wait_for before the whole run is killed.
 exec env -i \
     PATH=/usr/local/bin:/usr/bin:/bin \
     LANG=C.UTF-8 \
@@ -58,7 +59,7 @@ exec env -i \
     AWS_EC2_METADATA_DISABLED=true \
     S2_PROBE_PORT="$PORT" \
     S2_RSS_LIMIT_MB=400 \
-    timeout 900 nice -n 19 choom -n 1000 -- ${TIMER[@]+"${TIMER[@]}"} "$PY" -I -u -c '
+    timeout 1200 nice -n 19 choom -n 1000 -- ${TIMER[@]+"${TIMER[@]}"} "$PY" -I -u -c '
 import sys, runpy
 checkout, here, group = sys.argv[1:4]
 sys.path.insert(0, checkout)

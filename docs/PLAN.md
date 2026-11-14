@@ -75,8 +75,12 @@ VALIDATED / PARTIAL / INVALIDATED с командами и ограничени�
   «S1»; проба `prototypes/s1/`, запуск вручную): конец хода — хук `on_processing_complete`; итог —
   `reply_to == message_id` + `notify` (метки LINE — только подсказка); ошибка агента приходит обычным
   итогом с `success`; вторая фраза в занятую беседу ломает привязку в обоих режимах — гейт Р2 обязателен.
-- **S2. Профиль.** `gateway.profile_routes {platform: yandex_alice, profile: …}` в мультиплексе;
-  `platform_toolsets.yandex_alice`; где лежит плагин и какой профиль поднимает адаптер и порт.
+- **S2. Профиль.** **PARTIAL, 2026-11-14** (`docs/RECON.md`, «S2»; проба `prototypes/s2/`): адаптер,
+  `platforms.yandex_alice` и `ALICE_*` — в профиле по умолчанию, маршрут без `user_id` переносит ход,
+  сессию, историю и `platform_toolsets` в целевой профиль; подсказка и уровень плагина туда сами не
+  доходят (плагин ещё и в каталоге профиля или `platform_hints`/`display.platforms` — решение владельца);
+  адаптеру нужен `validate_config` по секрету области; `allowlist_suppresses_pairing` код привязки при
+  маршруте не гасит — нужен `unauthorized_dm_behavior: ignore`.
 - **S3. Telegram.** `platform_registry.get("telegram").standalone_sender_fn(pconfig, chat_id, text)`:
   какой токен виден в области целевого профиля, результат и ошибки, работа в event loop.
 - **S4. Подтверждения.** Что делает базовый `send_exec_approval`; перенос карточки в Telegram:

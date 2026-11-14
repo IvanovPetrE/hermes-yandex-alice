@@ -17,6 +17,7 @@ yandex-alice/      каталог плагина → ~/.hermes/plugins/yandex-al
   protocol.py      чистая логика, без зависимостей от Hermes
 tests/             unittest, Hermes не нужен
 prototypes/s1/     проба S1 (финальность ответа) — запуск вручную против checkout Hermes
+prototypes/s2/     проба S2 (профиль и profile_routes) — запуск вручную против checkout Hermes
 docs/PLAN.md       план работ
 docs/RECON.md      разведка
 ```

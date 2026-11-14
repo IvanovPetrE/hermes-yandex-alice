@@ -32,7 +32,7 @@ display_tier="minimal", max_message_length=..., allowed_users_env=...)`.
 
 | Вопрос | Ответ | Где |
 |---|---|---|
-| Профиль voice-profile | `gateway.profile_routes` сравнивает `platform` строкой — `{platform: yandex_alice, profile: voice-profile}` подходит плагинной платформе | `gateway/profile_routing.py` (`ProfileRoute.matches`) |
+| Целевой профиль | `gateway.profile_routes` сравнивает `platform` строкой — `{platform: yandex_alice, profile: <целевой профиль>}` подходит плагинной платформе; проверено пробой — раздел «S2» | `gateway/profile_routing.py` (`ProfileRoute.matches`) |
 | Инструменты | `platform_toolsets.yandex_alice` — плагинные платформы допустимы как `--platform` | adding-platform-adapters.md, «provides_tools» |
 | Голосовой стиль и формат «ГОЛОС/ТЕЛЕГРАМ» | `platform_hint` попадает в системный промпт | там же, таблица «What the Plugin System Handles» |
 | Удержание ответа ≤ 4,5 с | Готовый образец — LINE: `RequestCache` PENDING→READY→DELIVERED, `send()` кладёт ответ в кэш, `_keep_typing` по порогу, `interrupt_session_activity` на `/stop`; служебные отправки отличает `metadata["_interim_send"]` и префиксы `⚡ ⏳ ⏩ 💾` (для нас недостаточно — S1 ниже) | `plugins/platforms/line/adapter.py` |
@@ -57,10 +57,11 @@ display_tier="minimal", max_message_length=..., allowed_users_env=...)`.
 5. **Cron из Алисы.** Задача, созданная в сессии `yandex_alice`, по умолчанию доставит результат в `yandex_alice`,
    где никто не слушает → в `platform_hint` назначить доставку в Telegram (аналог `ALICE_CRON_DELIVER`)
    или задать `standalone_sender_fn`, пересылающий в Telegram.
-6. **Где лежит плагин при мультиплексе:** `~/.hermes/plugins/yandex-alice` main или каталог профиля voice-profile;
-   какой профиль поднимает адаптер и слушает порт (`acquire_scoped_lock`, `PORT_BINDING_PLATFORM_VALUES`).
+6. ~~**Где лежит плагин при мультиплексе**~~ — проверено пробой S2, вердикт **PARTIAL**: раздел «S2» ниже.
 7. **Авторизация.** Владелец — одна учётка Алисы: `allowed_users_env="ALICE_OWNER_USER_ID"` плюс
    собственная проверка `skill_id`/`user_id` до `handle_message`; `trusted_inbound` не ставить.
+   `allowlist_suppresses_pairing=True` (решение владельца) при маршруте в другой профиль код привязки
+   **не** гасит; второй рубеж — `unauthorized_dm_behavior: ignore` (S2, вывод 5).
 8. **Перезапуск шлюза** теряет PENDING-кэш — Алиса отвечает `REPLY_LOST` (как сейчас при перезапуске bridge).
 
 ## Модель диалога (решение владельца 2026-11-14)
@@ -83,8 +84,8 @@ display_tier="minimal", max_message_length=..., allowed_users_env=...)`.
 
 ### Принятые решения (2026-11-14)
 
-1. **История диалога хранится в Hermes**, а не в памяти плагина или bridge: сессия шлюза профиля
-   voice-profile, `state.db`. Собственного кэша истории (ходы/байты/TTL) не делаем — переживает
+1. **История диалога хранится в Hermes**, а не в памяти плагина или bridge: сессия шлюза целевого
+   профиля, `state.db`. Собственного кэша истории (ходы/байты/TTL) не делаем — переживает
    перезапуск шлюза, агент видит в контексте и результаты инструментов, а не только текст.
 2. **Сессия Алисы после ответа не закрывается** (`end_session: false`) — всегда, без маркера от агента.
    Закрытие — явное «хватит/стоп/выход» или таймаут Алисы.
@@ -257,6 +258,94 @@ rm -rf -- "$D"
 - Проба опирается на `gateway.run.GatewayRunner` и `tests/…` Hermes — не публичный API; допустимо только
   в пробе, в адаптер не переносится. В CI GitHub проба не запускается (решение владельца): нужен полный
   рантайм Hermes; на этапе 6 её заменит тест совместимости адаптера.
+
+## S2: профиль и `profile_routes` — вердикт PARTIAL (2026-11-14)
+
+Вопрос: при `gateway.multiplex_profiles: true` может ли плагин жить в профиле **по умолчанию**
+(каталог, `plugins.enabled`, `platforms.yandex_alice`, `ALICE_*` в его `.env`), а маршрут без
+`user_id` — `{name, platform: yandex_alice, profile: <целевой профиль>}` (решение владельца) —
+переводить каждый ход в целевой профиль, только настройками и через публичный API плагина?
+Проба — `prototypes/s2/`: настоящий каталог плагина, найденный штатным обнаружением Hermes
+(`ctx.register_platform`, заглушка импортирует только модули из `public-api.md`), профиль по
+умолчанию и профиль `p2`, `GatewayRunner` с мультиплексом, скриптованный LLM. Проверено против
+checkout `3b42157858` (v0.23.1).
+
+Запуск (по процессу на группу; порт — свободный loopback):
+
+```sh
+D=$(mktemp -d /tmp/hya-s2-XXXXXX) && cp -r prototypes/s2 "$D/"
+for G in A1 A2 A2g A3 A4 A0 B; do bash "$D/s2/run.sh" <hermes-checkout> <dependency-venv-python> "$G" <port>; done
+rm -rf -- "$D"
+```
+
+Контрольный прогон из коммита `558899d`: A1–A4, A2g — `Ran 8 tests … OK`, A0 и B — `Ran 2 tests … OK`;
+пиковый RSS 196–259 МБ. После него по ревью изменены только `timeout` в `run.sh` (900 → 1200 с) и
+отказ стража при пустом `HERMES_HOME` — сценарии и утверждения те же, повторно не прогонялось.
+
+### Что подтверждено во всех группах
+
+- **Ход идёт в целевом профиле.** `on_processing_start` получает `source.profile == "p2"`; ключ сессии
+  `agent:p2:yandex_alice:dm:<chat_id>`, строка `sessions` — только в `state.db` p2; системный промпт — с
+  SOUL p2, без SOUL default; инструменты — из `platform_toolsets.yandex_alice` **p2** (`todo_list`, нет
+  `cronjob_manage` из списка default); второй ход в тот же `chat_id` получает историю первого.
+- **Один адаптер, один listener — у default.** Адаптер создаётся и `connect()` вызывается в области
+  default (`get_hermes_home()` = корень, секрет из `.env` default); итог хода приходит в него же
+  (`reply_to` + `notify`, правило S1 не меняется).
+- **Авторизация — по `.env` default.** `ALICE_OWNER_USER_ID` лежит только там; ход владельца проходит.
+- **Область меняется внутри `send()`.** Итог хода отправляется в области default, а `📬 No home channel…`
+  и ответ чужому — в области p2 (`get_scoped_secret` возвращает значение p2). Плагину: секреты читать
+  только при создании адаптера и в `connect()`, не в `send()`.
+
+### Наблюдения по группам
+
+| Группа | Настройка | Подсказка плагина в p2 | Уровень `minimal` в p2 | Адаптеры | Чужой `user_id` |
+|---|---|---|---|---|---|
+| A1 | плагин только в default | нет | нет: комментарий `Сейчас запишу.`, иногда `📋 Updating tasks…` | default | код привязки |
+| A2 | плагин ещё и в каталоге p2 + `plugins.enabled` p2 | да | да | **default и p2** (p2 включил платформу сам, второй сокет) | код привязки |
+| A2g | A2 + `validate_config` требует `ALICE_PATH_SECRET` в текущей области | да | да | default | код привязки |
+| A3 | плагин только в default; в config p2 `platform_hints.yandex_alice` + `display.platforms.yandex_alice.*` | текст из `platform_hints` | да | default | код привязки |
+| A4 | A1 + `platforms.yandex_alice.extra.unauthorized_dm_behavior: ignore` в default | нет | нет | default | **ничего** |
+| A0 | A1 без `allowlist_suppresses_pairing` | — | — | default | код привязки |
+| B | платформа включена и настроена и в p2 | да | — | default; у p2 `connect()` не открыл занятый порт → `yandex_alice failed to connect (profile: p2)` | — |
+
+Для чужого `user_id` во всех группах приходят `on_processing_start`/`on_processing_complete(success)` в p2,
+LLM не вызывается.
+
+### Выводы
+
+1. **Схема подтверждена:** адаптер, `platforms.yandex_alice` и `ALICE_*` — в профиле по умолчанию; маршрут
+   без `user_id` переносит ход, сессию, историю, SOUL и инструменты в целевой профиль. Плагину имя профиля
+   не нужно (решение 8).
+2. **Почему PARTIAL — подсказка и уровень плагина в целевой профиль сами не попадают.** Регистрации
+   плагинов разделены по `HERMES_HOME` (`gateway/platform_registry.py:202`), а промпт и отображение хода
+   собираются в области целевого профиля. Рабочих способа два — A2 (плагин ещё и в каталоге целевого
+   профиля) и A3 (`platform_hints` и `display.platforms.yandex_alice.*` в его config). Выбор — решение
+   владельца для `docs/configuration.md` (решено «после пробы»). `platform_hints` — ключ **верхнего уровня**
+   config (`agent/agent_init.py:1288`), не `agent.platform_hints`.
+3. **Адаптеру обязателен `validate_config`, проверяющий секрет в текущей области.** Без него `is_connected`
+   падает на `check_fn`, и любой профиль, в реестре которого есть плагин, включает платформу сам
+   (`gateway/config_env.py:191–226`, A2): второй адаптер и второй listener. С проверкой `ALICE_PATH_SECRET`
+   через `get_scoped_secret` — нет (A2g).
+4. **Ядро не знает, что `yandex_alice` занимает порт** (`PORT_BINDING_PLATFORM_VALUES`, `gateway/config.py:306`):
+   при включении во втором профиле второй bind просто падает (B). В `docs/configuration.md` — включать
+   платформу только в профиле по умолчанию; `ALICE_*` в `.env` других профилей не класть.
+5. **`allowlist_suppresses_pairing=True` при маршруте код привязки не гасит.** Режим для неизвестного
+   отправителя выбирается в области целевого профиля, где переменной `allowed_users_env` нет
+   (`gateway/authz_mixin.py:845–870`), — получается `pair`, чужому уходит код. Гасит явный
+   `platforms.yandex_alice.extra.unauthorized_dm_behavior: ignore` в config профиля по умолчанию (A4;
+   читается из конфига runner'а, `authz_mixin.py:485`). Главный рубеж — по-прежнему проверка адаптера до
+   `handle_message`; какой второй рубеж ставить (настройка в документации или значение, которое адаптер
+   задаёт сам) — решение владельца.
+6. `📬 No home channel…` приходит в каждом новом `chat_id` и отправляется в области целевого профиля;
+   правило S1 его отсекает. Нужен ли home channel для `yandex_alice` — этап 7.
+
+### Ограничения и что не проверено
+
+- Один процесс, временный дом; живой шлюз с реальными профилями, Telegram и `hermes plugins validate` — нет.
+- Восстановление после перезапуска шлюза (`sessions.transport_profile`) и доставка вне хода в целевом
+  профиле — S5/S6.
+- Ход с одобренной привязкой чужого не проверялся (код только наблюдался).
+- Проба опирается на `gateway.run.GatewayRunner`, `tests/…` и приватные атрибуты runner'а — только в пробе.
 
 ## Что берём из ТЗ и плана v3 (2026-11-14)
 

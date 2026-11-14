@@ -306,9 +306,12 @@ def _guard_temp_home() -> Path:
     """Refuse to run against a real Hermes home (harness reads HERMES_HOME set by run.sh)."""
     import pwd  # POSIX only
 
-    home = Path(os.environ.get("HERMES_HOME", "")).resolve()
+    raw = os.environ.get("HERMES_HOME", "").strip()
+    if not raw:
+        raise SystemExit("refusing: HERMES_HOME is not set (run through run.sh)")
+    home = Path(raw).resolve()
     real_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
-    if not str(home) or real_home == home or real_home in home.parents:
+    if real_home == home or real_home in home.parents:
         raise SystemExit(f"refusing: HERMES_HOME {home} is inside the real home of this user")
     if not any(p.name.startswith("hya-s2-") for p in home.parents):
         raise SystemExit(f"refusing: HERMES_HOME {home} is not under a hya-s2-* temp dir")
