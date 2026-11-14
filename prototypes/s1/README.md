@@ -7,7 +7,8 @@
 ## Что внутри
 
 - `probe_s1.py` — заглушка-адаптер `StubAliceAdapter` (журнал всех вызовов шлюза, без сети и порта),
-  правило классификации `TurnTracker` и сценарии на `unittest`:
+  правило классификации `TurnTracker` (его unit-тесты `TrackerRuleTests` идут без Hermes, в том числе
+  локально: `py -m unittest discover -s prototypes/s1 -p probe_s1.py -k TrackerRuleTests`) и сценарии на `unittest`:
   - группа A — `display_tier="minimal"`, глобальный стриминг включён, `busy_input_mode: interrupt`;
   - группа B — переопределения оператора (`display.tool_progress: all`,
     `display.interim_assistant_messages: true`, `busy_input_mode: queue`).

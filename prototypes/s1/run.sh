@@ -20,7 +20,7 @@ CHECKOUT=$1
 PY=$2
 GROUP=$3
 case "$GROUP" in
-    A) CLS=GroupA ;;
+    A) CLS=TrackerRuleTests,GroupA ;;
     B) CLS=GroupB ;;
     *) echo "group must be A or B" >&2; exit 2 ;;
 esac
@@ -42,6 +42,9 @@ if [ -x /usr/bin/time ]; then TIMER=(/usr/bin/time -v); fi
 
 # env -i: nothing from the caller's environment (no real HERMES_HOME, no XDG runtime dir).
 # choom -n 1000: if memory runs out, the kernel kills the probe, not the live gateway.
+# -I implies -E (PYTHON* variables are ignored), so unbuffered output is the -u flag: the
+# journal printed so far survives a timeout kill. Hash seed stays random (nothing depends on it).
+# timeout 1200 > worst case: boot + 7 scenarios x 180 s wait_for is already above 600 s.
 exec env -i \
     PATH=/usr/local/bin:/usr/bin:/bin \
     LANG=C.UTF-8 \
@@ -50,18 +53,16 @@ exec env -i \
     HERMES_GATEWAY_LOCK_DIR="$ROOT/locks" \
     TMPDIR="$ROOT/tmp" \
     TZ=UTC \
-    PYTHONHASHSEED=0 \
-    PYTHONUNBUFFERED=1 \
     HERMES_DISABLE_LAZY_INSTALLS=1 \
     AWS_EC2_METADATA_DISABLED=true \
     ALICE_OWNER_USER_ID=u-probe-owner \
-    timeout 600 nice -n 19 choom -n 1000 -- "${TIMER[@]}" "$PY" -I -c '
+    timeout 1200 nice -n 19 choom -n 1000 -- ${TIMER[@]+"${TIMER[@]}"} "$PY" -I -u -c '
 import sys, runpy
-checkout, here, cls = sys.argv[1:4]
+checkout, here, classes = sys.argv[1:4]
 sys.path.insert(0, checkout)
 sys._hermes_pin_default_home = True
 import hermes_bootstrap  # noqa: F401  (sets up the Hermes runtime site-packages)
 sys.path.insert(0, here)
-sys.argv = ["probe_s1", "-v", "probe_s1." + cls]
+sys.argv = ["probe_s1", "-v", *("probe_s1." + c for c in classes.split(","))]
 runpy.run_module("unittest", run_name="__main__", alter_sys=True)
 ' "$CHECKOUT" "$HERE" "$CLS"

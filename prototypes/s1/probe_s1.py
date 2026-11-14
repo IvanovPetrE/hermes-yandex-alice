@@ -22,9 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import pwd
 import os
-import resource
 import time
 import unittest
 from dataclasses import dataclass, field
@@ -38,12 +36,14 @@ TURN_TIMEOUT = 90.0
 SETTLE = 1.5  # seconds to keep listening after a turn closed (late sends)
 SYSTEM_PREFIXES = ("⚡", "⏳", "⏩", "💾")  # LINE's fallback markers
 
+# config.yaml additions. Global streaming is NOT here: like Hermes' own harness, the probe hands
+# GatewayRunner a GatewayConfig with streaming enabled, and test_00 reads it back from the runner.
 GROUP_CONFIG = {
-    # Group A: streaming on globally, busy_input_mode interrupt, no operator display overrides.
-    "A": "display:\n  busy_input_mode: interrupt\nstreaming:\n  enabled: true\n",
+    # Group A: busy_input_mode interrupt, no operator display overrides.
+    "A": "display:\n  busy_input_mode: interrupt\n",
     # Group B: operator overrides that beat the platform's display tier.
     "B": ("display:\n  busy_input_mode: queue\n  tool_progress: all\n"
-          "  interim_assistant_messages: true\nstreaming:\n  enabled: true\n"),
+          "  interim_assistant_messages: true\n"),
 }
 # Keys added to the ``agent:`` section write_hermes_home() already writes (a second top-level
 # ``agent:`` would be a duplicate YAML key). The provider-recovery ladder (default 5 cycles,
@@ -102,9 +102,10 @@ class TurnTracker:
 
     A turn opens at ``on_processing_start(event)`` and closes at ``on_processing_complete``.
     The final answer is a send to the turn's chat with ``reply_to == event.message_id`` and
-    ``metadata["notify"]``, carrying no interim hint (``_interim_send`` / LINE prefixes).
-    Anything else during an open turn is ``during``; with no open turn in the chat - ``outside``
-    (a classification label only; what the adapter does with it is decided later).
+    ``metadata["notify"] is True`` that is not explicitly marked ``_interim_send``. LINE's text
+    prefixes never veto a final (an agent answer may start with ⏳); they only label unanchored
+    sends as ``interim``. Anything else during an open turn is ``during``; with no open turn in the
+    chat - ``outside`` (a classification label only; what the adapter does with it is decided later).
     """
 
     def __init__(self) -> None:
@@ -114,7 +115,9 @@ class TurnTracker:
     def feed(self, ops: list[Op]) -> "TurnTracker":
         for op in ops:
             if op.op == "start":
-                self.turns[op.message_id] = TurnResult(op.message_id, op.chat_id, t_start=op.t)
+                # A repeated start for the same event must not drop what was already recorded.
+                if op.message_id not in self.turns:
+                    self.turns[op.message_id] = TurnResult(op.message_id, op.chat_id, t_start=op.t)
             elif op.op == "complete":
                 turn = self.turns.setdefault(op.message_id, TurnResult(op.message_id, op.chat_id))
                 turn.outcome, turn.t_complete = op.outcome, op.t
@@ -127,14 +130,15 @@ class TurnTracker:
 
     def _classify(self, op: Op) -> str:
         open_turns = self._open(op.chat_id)
+        if not op.metadata.get("_interim_send"):
+            for turn in open_turns:
+                if op.reply_to == turn.message_id and op.metadata.get("notify") is True:
+                    if turn.final is None:
+                        turn.final, turn.final_meta, turn.t_final = op.content, dict(op.metadata), op.t
+                        return "final"
+                    return "final-again"
         if is_interim_hint(op):
             return "interim" if open_turns else "outside"
-        for turn in open_turns:
-            if op.reply_to == turn.message_id and op.metadata.get("notify"):
-                if turn.final is None:
-                    turn.final, turn.final_meta, turn.t_final = op.content, dict(op.metadata), op.t
-                    return "final"
-                return "final-again"
         return "during" if open_turns else "outside"
 
     def classes(self, chat_id: str, *, skip_home_notice: bool = True) -> list[str]:
@@ -147,7 +151,9 @@ class TurnTracker:
 
 
 def is_home_notice(op: Op) -> bool:
-    return op.content.startswith("📬")
+    """The gateway's per-chat "📬 No home channel" notice: unanchored, not notify."""
+    return (op.content.startswith("📬") and op.reply_to is None
+            and op.metadata.get("notify") is not True)
 
 
 # --- scripted agent --------------------------------------------------------------------------
@@ -196,6 +202,8 @@ class Script:
 
 def _guard_temp_home() -> Path:
     """Refuse to run against a real Hermes home."""
+    import pwd  # POSIX only; kept local so TrackerRuleTests also run on Windows
+
     from hermes_constants import get_hermes_home
 
     home = Path(get_hermes_home()).resolve()
@@ -356,7 +364,10 @@ class World:
             user_cfg = _load_gateway_config()
             for key in ("tool_progress", "interim_assistant_messages", "streaming"):
                 self.effective[key] = resolve_display_setting(user_cfg, PLATFORM, key)
-            self.effective["streaming_global"] = bool(config.streaming.globally_enabled)
+            # What the running gateway holds, not the object built above.
+            runner_streaming = getattr(getattr(runner, "config", None), "streaming", None)
+            self.effective["streaming_global"] = (
+                None if runner_streaming is None else bool(runner_streaming.globally_enabled))
             self.effective["busy_input_mode"] = getattr(runner, "_busy_input_mode", None)
             for name, coro_fn in scenarios:
                 try:
@@ -366,6 +377,8 @@ class World:
                 await asyncio.sleep(SETTLE)
         finally:
             await runner.stop()
+            import resource  # POSIX only, see _guard_temp_home
+
             self.effective["maxrss_mb"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
 
     def dump(self, name: str, chats: set[str]) -> None:
@@ -431,9 +444,10 @@ async def sc_busy(w: World, chat="c06", token="t06") -> None:
     await asyncio.sleep(0.5)
     await w.adapter.inject(f"probe [{token}b] вторая", f"{chat}-m2", chat)
     await w.wait_complete(f"{chat}-m1")
-    deadline = time.monotonic() + 30.0  # queue mode: the follow-up closes later
-    while time.monotonic() < deadline and not w.script.seen.count(f"{token}b"):
-        await asyncio.sleep(0.05)
+    if w.effective.get("busy_input_mode") == "queue":  # the follow-up runs after the opener
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline and f"{token}b" not in w.script.seen:
+            await asyncio.sleep(0.05)
     await asyncio.sleep(3.0)
 
 
@@ -457,6 +471,56 @@ SCENARIOS_B = [("tool", lambda w: sc_tool(w, "c08", "m08", "t08")),
 
 
 # --- tests -----------------------------------------------------------------------------------
+
+
+class TrackerRuleTests(unittest.TestCase):
+    """The classification rule alone, on synthetic journals - no Hermes needed."""
+
+    @staticmethod
+    def feed(*ops: Op) -> TurnTracker:
+        return TurnTracker().feed(list(ops))
+
+    def test_prefix_does_not_veto_an_anchored_final(self) -> None:
+        tr = self.feed(Op(0, "start", "c", "m"),
+                       Op(1, "send", "c", content="⏳ Таймер на 5 минут поставлен.", reply_to="m",
+                          metadata={"notify": True}),
+                       Op(2, "complete", "c", "m", outcome="success"))
+        self.assertEqual(tr.turns["m"].verdict, "final")
+        self.assertEqual(tr.classes("c"), ["final"])
+
+    def test_explicit_interim_marker_is_never_final(self) -> None:
+        tr = self.feed(Op(0, "start", "c", "m"),
+                       Op(1, "send", "c", content="Сейчас проверю.", reply_to="m",
+                          metadata={"notify": True, "_interim_send": True}),
+                       Op(2, "complete", "c", "m", outcome="success"))
+        self.assertEqual(tr.turns["m"].verdict, "empty")
+        self.assertEqual(tr.classes("c"), ["interim"])
+
+    def test_notify_must_be_true(self) -> None:
+        tr = self.feed(Op(0, "start", "c", "m"),
+                       Op(1, "send", "c", content="x", reply_to="m", metadata={"notify": "yes"}),
+                       Op(2, "complete", "c", "m", outcome="success"))
+        self.assertEqual(tr.classes("c"), ["during"])
+
+    def test_repeated_start_keeps_the_recorded_final(self) -> None:
+        tr = self.feed(Op(0, "start", "c", "m"),
+                       Op(1, "send", "c", content="Ответ.", reply_to="m", metadata={"notify": True}),
+                       Op(2, "start", "c", "m"),
+                       Op(3, "complete", "c", "m", outcome="success"))
+        self.assertEqual((tr.turns["m"].final, tr.turns["m"].t_start), ("Ответ.", 0))
+
+    def test_home_notice_needs_no_anchor(self) -> None:
+        tr = self.feed(Op(0, "start", "c", "m"),
+                       Op(1, "send", "c", content="📬 No home channel is set"),
+                       Op(2, "send", "c", content="📬 Письмо пришло.", reply_to="m",
+                          metadata={"notify": True}),
+                       Op(3, "complete", "c", "m", outcome="success"))
+        self.assertEqual(tr.home_notices("c"), ["during"])
+        self.assertEqual(tr.classes("c"), ["final"])
+
+    def test_send_without_open_turn_is_outside(self) -> None:
+        tr = self.feed(Op(0, "send", "c", content="⏳ later"), Op(1, "send", "c", content="late"))
+        self.assertEqual(tr.classes("c"), ["outside", "outside"])
 
 
 class _GroupBase(unittest.TestCase):
@@ -565,6 +629,7 @@ class GroupB(_GroupBase):
         e = self.world.effective
         self.assertEqual(e["tool_progress"], "all")
         self.assertTrue(e["interim_assistant_messages"])
+        self.assertTrue(e["streaming_global"])
         self.assertEqual(e["busy_input_mode"], "queue")
 
     def test_08_tool_with_operator_overrides(self) -> None:

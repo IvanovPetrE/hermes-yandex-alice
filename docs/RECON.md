@@ -184,7 +184,7 @@ Hermes; модели, ключей и расходов нет. Проверен�
 
 ```sh
 D=$(mktemp -d /tmp/hya-s1-XXXXXX) && cp -r prototypes/s1 "$D/"
-bash "$D/s1/run.sh" <hermes-checkout> <dependency-venv-python> A   # Ran 8 tests … OK
+bash "$D/s1/run.sh" <hermes-checkout> <dependency-venv-python> A   # Ran 14 tests … OK (6 — правило)
 bash "$D/s1/run.sh" <hermes-checkout> <dependency-venv-python> B   # Ran 4 tests … OK
 rm -rf -- "$D"
 ```
@@ -200,9 +200,12 @@ rm -rf -- "$D"
   методы `BasePlatformAdapter` (модуль `gateway.platforms.base` целиком в `public-api.md`; в
   `adding-platform-adapters.md` хуки не описаны — только docstring). Хук приходит через 5–14 мс после итога.
 - **Итог** — отправка с `reply_to == event.message_id` и `metadata["notify"] is True`
-  (`_send_final_text` → `send_final_ledgered`, `gateway/platforms/base.py:4302`, `:4492`).
-- `_interim_send` и префиксы LINE `⚡ ⏳ ⏩ 💾` — только подсказки: многие служебные отправки идут без них.
+  (`_send_final_text` → `send_final_ledgered`, `gateway/platforms/base.py:4302`, `:4492`), если на ней
+  нет явной `_interim_send`. Префиксы LINE `⚡ ⏳ ⏩ 💾` итог **не** отменяют (ответ агента может начинаться
+  с ⏳) — ими помечаются только отправки без якоря.
+- `_interim_send` и префиксы — только подсказки: многие служебные отправки идут без них.
   Правило LINE («первая отправка без метки и префикса») в этой версии озвучило бы «📬 No home channel…».
+  Правило закреплено unit-тестами без Hermes: `TrackerRuleTests` в `prototypes/s1/probe_s1.py`.
 
 Почему не VALIDATED: документированного сигнала «это итог хода» нет — `reply_to`/`notify` и
 `_interim_send` («Gateway-internal», `gateway/run.py:480`) в руководстве не описаны. Риск изменения без
@@ -225,7 +228,8 @@ rm -rf -- "$D"
 
 ### Выводы для адаптера (этап 3)
 
-1. `send()`: итог хода — только `reply_to == message_id` открытого хода + `notify`; всё остальное
+1. `send()`: итог хода — только `reply_to == message_id` открытого хода + `notify is True` без
+   `_interim_send` (префиксы не в счёт); всё остальное
    за ход — не озвучивается (кандидаты в подробности/лог — решение этапа 2). Конец хода — по хуку.
 2. **Гейт занятой беседы обязателен** (Р2): пока ход беседы открыт, новая фраза в Hermes не передаётся —
    иначе привязка ломается в обоих режимах `busy_input_mode`.
@@ -233,7 +237,8 @@ rm -rf -- "$D"
    с текстом ошибки шлюза (англ., технический). По контракту их не отличить — только по тексту. Как
    это озвучивать (М6 «честно — не получилось») — вопрос этапа 2.
 4. `📬 No home channel is set…` приходит в каждом новом `chat_id` (каждой новой беседе) — правило его
-   отсекает; поставить ли home channel для `yandex_alice` — S2 / `docs/configuration.md`.
+   отсекает (нет `reply_to`/`notify`, а не по префиксу); поставить ли home channel для `yandex_alice` —
+   S2 / `docs/configuration.md`.
 5. `display.<key>` оператора побеждает уровень `minimal`; стабильнее — `display.platforms.yandex_alice.*`
    в документации по настройке (этап 7). При `interim_assistant_messages: true` итог в пробе всё равно
    шёл базовым путём (адаптер без правок); путь через stream consumer не наблюдался.

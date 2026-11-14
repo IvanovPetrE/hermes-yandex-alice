@@ -109,7 +109,8 @@ VALIDATED / PARTIAL / INVALIDATED с командами и ограничени�
   (бюджет ~3,5 с при лимите Алисы 4,5 с) по монотонным часам.
 - Проверки по порядку: секретный путь (constant-time) → формат → `ping` → `skill_id` → владелец →
   лимит частоты. `MessageEvent.allow_gateway_control=False`. Секреты — `get_scoped_secret`, не `os.environ`.
-- `send()` по правилу S1: итог — отправка с `reply_to == message_id` открытого хода и `notify`, кладётся
+- `send()` по правилу S1: итог — отправка с `reply_to == message_id` открытого хода, `notify is True` и
+  без `_interim_send` (префиксы `⚡ ⏳ ⏩ 💾` итог не отменяют), кладётся
   в кэш хода; конец хода — `on_processing_start`/`on_processing_complete`; прочие отправки не озвучиваются.
   Пока ход беседы открыт, новая фраза в `handle_message` не передаётся (гейт Р2).
 - Логи без пути, тела и текста реплик; диагностика только по метаданным.
