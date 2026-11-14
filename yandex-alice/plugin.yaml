@@ -1,0 +1,22 @@
+# Черновик манифеста: поля сверены с adding-platform-adapters.md (Hermes v0.23.1),
+# на живом Hermes ещё не проверялся (`hermes plugins validate` — после появления adapter.py).
+name: yandex-alice
+label: Yandex Alice
+kind: platform
+version: 0.0.1
+description: Яндекс Алиса как платформа шлюза Hermes — голосовой ответ с удержанием сессии, подробности в Telegram
+requires_hermes: ">=0.23.1"
+requires_env:
+  - name: ALICE_PATH_SECRET
+    description: "Секретная часть пути webhook навыка (64 hex)"
+    password: true
+  - name: ALICE_SKILL_ID
+    description: "ID навыка в Яндекс Диалогах"
+    password: false
+optional_env:
+  - name: ALICE_OWNER_USER_ID
+    description: "session.user.user_id владельца; пусто — режим привязки (все отказы)"
+    password: false
+  - name: ALICE_TELEGRAM_CHAT
+    description: "Чат Telegram для подробного ответа"
+    password: false

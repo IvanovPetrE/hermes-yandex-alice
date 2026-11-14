@@ -25,39 +25,39 @@
       → self.handle_message(MessageEvent) → сессия шлюза → AliceAdapter.send(chat_id, ответ)
 ```
 
-`register(ctx)` → `ctx.register_platform(name="alice", adapter_factory=..., check_fn=..., platform_hint=...,
+`register(ctx)` → `ctx.register_platform(name="yandex_alice", adapter_factory=..., check_fn=..., platform_hint=...,
 display_tier="minimal", max_message_length=..., allowed_users_env=...)`.
 
 ## Установленные факты
 
 | Вопрос | Ответ | Где |
 |---|---|---|
-| Профиль voice-profile | `gateway.profile_routes` сравнивает `platform` строкой — `{platform: alice, profile: voice-profile}` подходит плагинной платформе | `gateway/profile_routing.py` (`ProfileRoute.matches`) |
-| Инструменты | `platform_toolsets.alice` — плагинные платформы допустимы как `--platform` | adding-platform-adapters.md, «provides_tools» |
+| Профиль voice-profile | `gateway.profile_routes` сравнивает `platform` строкой — `{platform: yandex_alice, profile: voice-profile}` подходит плагинной платформе | `gateway/profile_routing.py` (`ProfileRoute.matches`) |
+| Инструменты | `platform_toolsets.yandex_alice` — плагинные платформы допустимы как `--platform` | adding-platform-adapters.md, «provides_tools» |
 | Голосовой стиль и формат «ГОЛОС/ТЕЛЕГРАМ» | `platform_hint` попадает в системный промпт | там же, таблица «What the Plugin System Handles» |
 | Удержание ответа ≤ 4,5 с | Готовый образец — LINE: `RequestCache` PENDING→READY→DELIVERED, `send()` кладёт ответ в кэш, `_keep_typing` по порогу, `interrupt_session_activity` на `/stop`; служебные отправки отличает `metadata["_interim_send"]` и префиксы `⚡ ⏳ ⏩ 💾` | `plugins/platforms/line/adapter.py` |
 | HTTP-сервер | `aiohttp` есть в окружении шлюза (им пользуются webhook/api_server/LINE); `gateway/platforms/tcp_site.py` не публичен — `web.TCPSite` напрямую | — |
 | Секреты | Только `gateway.platforms._shared.get_scoped_secret` / `extra_or_secret`; `os.environ` не читать и не менять (мультиплекс профилей) | `plugins/AGENTS.md` |
 | Публичный API | Разрешённые импорты — `website/docs/developer-guide/plugins/public-api.md`; остальное `hermes plugins validate` помечает. Нужное нам: `gateway.platforms.base`, `.event`, `.helpers` (`MessageDeduplicator`, `cancel_task`), `._shared`, `gateway.config`, `gateway.platform_registry`, `tools.approval.resolve_gateway_approval_card` | public-api.md |
 | Доставка в Telegram | Штатно, через публичные модули: `platform_registry.get("telegram").standalone_sender_fn(pconfig, chat_id, text)` — тот же путь, что `hermes send` и cron вне шлюза. Токен — `pconfig.token`, иначе `get_secret("TELEGRAM_BOT_TOKEN")` **текущего профиля** | `plugins/platforms/telegram/standalone.py:425`, `gateway/platform_registry.py` |
-| Подтверждения опасных команд | `alice` **не** входит в `_UNATTENDED_APPROVAL_PLATFORMS = {"webhook", "msgraph_webhook", "api_server"}` (жёсткий список ядра) → голосовая сессия считается интерактивной: агент ждёт ответа на карточку до таймаута 60–300 с | `tools/approval_context.py:173` |
+| Подтверждения опасных команд | `yandex_alice` **не** входит в `_UNATTENDED_APPROVAL_PLATFORMS = {"webhook", "msgraph_webhook", "api_server"}` (жёсткий список ядра) → голосовая сессия считается интерактивной: агент ждёт ответа на карточку до таймаута 60–300 с | `tools/approval_context.py:173` |
 
 ## Открытые вопросы (проверить до кода адаптера)
 
-1. **Подтверждения.** Что делает базовый `send_exec_approval` у адаптера без кнопок (текст через `send()`?).
-   Варианты: сразу отклонять через `resolve_gateway_approval_card(..., "deny", request_id)`; либо
-   спрашивать голосом «Разрешить …? да/нет» и решать по ответу; либо переслать карточку в Telegram.
-   Решение — за владельцем.
-2. **Токен Telegram в сессии voice-profile.** Чат профиля обслуживается ботом main через
-   `profile_routes`; есть ли `TELEGRAM_BOT_TOKEN` в области voice-profile — проверить по именам переменных.
+1. **Подтверждения.** Решено (из ТЗ, см. «Что берём из ТЗ и плана v3»): только через привязанный
+   Telegram; до проверки прототипом — отклонять через `resolve_gateway_approval_card(..., "deny", request_id)`.
+   Проверить: что делает базовый `send_exec_approval` у адаптера без кнопок и можно ли перехватить
+   нажатие в Telegram через `ctx.register_platform_handler("telegram", ...)`.
+2. **Токен Telegram в сессии целевого профиля.** Чат профиля может обслуживаться ботом другого профиля
+   через `profile_routes`; есть ли `TELEGRAM_BOT_TOKEN` в области целевого профиля — проверить по именам переменных.
    Если нет — брать `pconfig` профиля, владеющего ботом, или отправлять через живой адаптер.
 3. **Какие `send()` приходят за ход:** итог, промежуточные (`_interim_send`), стриминг —
    хватит ли `display_tier="minimal"`, чтобы получить один итоговый текст.
 4. **Ключ сессии** — см. «Модель диалога» ниже; история — в сессии Hermes (решение 1 ниже).
-5. **Cron из Алисы.** Задача, созданная в сессии `alice`, по умолчанию доставит результат в `alice`,
+5. **Cron из Алисы.** Задача, созданная в сессии `yandex_alice`, по умолчанию доставит результат в `yandex_alice`,
    где никто не слушает → в `platform_hint` назначить доставку в Telegram (аналог `ALICE_CRON_DELIVER`)
    или задать `standalone_sender_fn`, пересылающий в Telegram.
-6. **Где лежит плагин при мультиплексе:** `~/.hermes/plugins/alice` main или каталог профиля voice-profile;
+6. **Где лежит плагин при мультиплексе:** `~/.hermes/plugins/yandex-alice` main или каталог профиля voice-profile;
    какой профиль поднимает адаптер и слушает порт (`acquire_scoped_lock`, `PORT_BINDING_PLATFORM_VALUES`).
 7. **Авторизация.** Владелец — одна учётка Алисы: `allowed_users_env="ALICE_OWNER_USER_ID"` плюс
    собственная проверка `skill_id`/`user_id` до `handle_message`; `trusted_inbound` не ставить.
@@ -115,12 +115,49 @@ Completions (старый bridge); плагинная платформа пол�
 | Фоновые subagent'ы | Отложенная доставка результата делегирования — только с явным `X-Hermes-Session-Id`; без него делегирование синхронное | api-server.md:571 |
 
 Вывод: сессии Hermes закрывают хранение истории; для плагина это штатное поведение шлюза. Для
-`alice` остаётся открытым вопрос 1 (подтверждения): в отличие от `api_server`, платформа считается
+`yandex_alice` остаётся открытым вопрос 1 (подтверждения): в отличие от `api_server`, платформа считается
 интерактивной.
+
+## Что берём из ТЗ и плана v3 (2026-11-14)
+
+Источники — приватные ТЗ и план v3 владельца (вне репозитория). **Приоритет — решения этого документа**
+(«Модель диалога»): там, где ТЗ/v3 строят всё вокруг задания (job), действует диалог.
+
+Отклонено как противоречащее нашим решениям:
+- «Нет» на предложение ждать завершает сессию — у нас сессия не закрывается (решение 2).
+- Новая команда — отдельное задание, независимые команды без истории (ТЗ §2, v3 §8) — у нас одна
+  беседа Hermes на сессию Алисы (решение 1).
+- Привязка ответа на уточнение к заданию и вопросу — у нас уточнение просто следующий ход беседы.
+
+Берём:
+1. **Прототип S1 первым**: окончательный ответ и его принадлежность ходу — по публичному контракту,
+   не по «последнему сообщению»; если контракта нет — фиксируем блокер, скрытых обходов не делаем.
+2. **Подтверждения только через Telegram**, одноразовые, привязаны к владельцу и действию;
+   автоподтверждения нет; «да» на «подождёте?» и «да» в диалоге — не разрешение (решение 5).
+3. **`MessageEvent.allow_gateway_control=False`** — штатная защита от `/команд` с голоса
+   (`gateway/platforms/event.py:121`, учитывается в `is_command()`).
+4. **«Да»/«нет» — по последней озвученной реплике**: в `waiting` — выбор ожидания, непонятная реплика
+   там переспрашивается, а не запускает ход; в `dialog` — всё уходит агенту (решение 3).
+5. **Неозвученный ответ выдаётся при следующем входе**, в том числе в новой сессии и после перезапуска.
+   Минимальное хранилище плагина — SQLite в каталоге данных плагина (`plugins.plugin_storage`):
+   ожидающий голосовой ответ и статус доставки в Telegram. Историю по-прежнему хранит Hermes.
+   Неясный исход хода или отправки автоматически не повторяется.
+6. **Жизненный цикл**: импорт не открывает порт; connect/disconnect/reload оставляют один listener.
+   Сценарии тестов — из `alice-voice` 0.3.2 (`e38849e`, MIT, с уведомлением об авторстве), включая
+   `f9a3cf7` «listener survives a plugin reload».
+7. **Cron с явным адресом доставки** (вопрос 5).
+8. **Паспорт стенда**: числовые лимиты (бюджет HTTP, очередь, параллельность, хранение, дедупликация)
+   до приёмки; прототипы — во временном `HERMES_HOME`, вердикт VALIDATED / PARTIAL / INVALIDATED.
+9. **Переход**: старый bridge работает до приёмки, один исполнитель команд, старый контейнер после
+   переключения остаётся остановленным. Caddy уже в `network_mode: host` — меняется только upstream-порт.
+
+Не берём (избыточно для одного владельца): три машины состояний, outbox с подтверждением каждой части
+Telegram-сообщения, перенос дедупликации при переключении, тесты на заполненный диск, README.ru,
+SECURITY и публикацию в Marketplace. Вернуться, если понадобится.
 
 ## Что переносится из старого bridge
 
-Стартовая точка, будет переделываться под диалог. Перенесено в `alice/protocol.py` без изменения поведения: тексты ответов, `alice_reply`, проверка тела,
+Стартовая точка, будет переделываться под диалог. Перенесено в `yandex-alice/protocol.py` без изменения поведения: тексты ответов, `alice_reply`, проверка тела,
 `speakable`/`split_answer`, интенты и `classify_reply`, `is_control_phrase`, `RateLimiter`.
 Не нужны: `ask_agent` (Chat Completions + ключи профилей), `deliver` + `sign_v2` (webhook `alice-reply`),
 `_DeadlineSocket`/`_post`, свой `ThreadingHTTPServer`. `Jobs`/`Turn` заменяются кэшем по образцу LINE.

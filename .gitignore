@@ -1,0 +1,14 @@
+# Секреты никогда не в git
+env
+*.env
+.env
+.env.*
+
+# Локальные настройки и рабочие материалы AI-инструментов — не для публикации
+.claude/
+.opencode/
+AGENTS.md
+CLAUDE.md
+
+__pycache__/
+*.pyc
