@@ -35,7 +35,7 @@ display_tier="minimal", max_message_length=..., allowed_users_env=...)`.
 | Профиль voice-profile | `gateway.profile_routes` сравнивает `platform` строкой — `{platform: yandex_alice, profile: voice-profile}` подходит плагинной платформе | `gateway/profile_routing.py` (`ProfileRoute.matches`) |
 | Инструменты | `platform_toolsets.yandex_alice` — плагинные платформы допустимы как `--platform` | adding-platform-adapters.md, «provides_tools» |
 | Голосовой стиль и формат «ГОЛОС/ТЕЛЕГРАМ» | `platform_hint` попадает в системный промпт | там же, таблица «What the Plugin System Handles» |
-| Удержание ответа ≤ 4,5 с | Готовый образец — LINE: `RequestCache` PENDING→READY→DELIVERED, `send()` кладёт ответ в кэш, `_keep_typing` по порогу, `interrupt_session_activity` на `/stop`; служебные отправки отличает `metadata["_interim_send"]` и префиксы `⚡ ⏳ ⏩ 💾` | `plugins/platforms/line/adapter.py` |
+| Удержание ответа ≤ 4,5 с | Готовый образец — LINE: `RequestCache` PENDING→READY→DELIVERED, `send()` кладёт ответ в кэш, `_keep_typing` по порогу, `interrupt_session_activity` на `/stop`; служебные отправки отличает `metadata["_interim_send"]` и префиксы `⚡ ⏳ ⏩ 💾` (для нас недостаточно — S1 ниже) | `plugins/platforms/line/adapter.py` |
 | HTTP-сервер | `aiohttp` есть в окружении шлюза (им пользуются webhook/api_server/LINE); `gateway/platforms/tcp_site.py` не публичен — `web.TCPSite` напрямую | — |
 | Секреты | Только `gateway.platforms._shared.get_scoped_secret` / `extra_or_secret`; `os.environ` не читать и не менять (мультиплекс профилей) | `plugins/AGENTS.md` |
 | Публичный API | Разрешённые импорты — `website/docs/developer-guide/plugins/public-api.md`; остальное `hermes plugins validate` помечает. Нужное нам: `gateway.platforms.base`, `.event`, `.helpers` (`MessageDeduplicator`, `cancel_task`), `._shared`, `gateway.config`, `gateway.platform_registry`, `tools.approval.resolve_gateway_approval_card` | public-api.md |
@@ -51,8 +51,8 @@ display_tier="minimal", max_message_length=..., allowed_users_env=...)`.
 2. **Токен Telegram в сессии целевого профиля.** Чат профиля может обслуживаться ботом другого профиля
    через `profile_routes`; есть ли `TELEGRAM_BOT_TOKEN` в области целевого профиля — проверить по именам переменных.
    Если нет — брать `pconfig` профиля, владеющего ботом, или отправлять через живой адаптер.
-3. **Какие `send()` приходят за ход:** итог, промежуточные (`_interim_send`), стриминг —
-   хватит ли `display_tier="minimal"`, чтобы получить один итоговый текст.
+3. ~~**Какие `send()` приходят за ход**~~ — проверено прототипом S1, вердикт **PARTIAL**: раздел
+   «S1: финальность и привязка ответа» ниже.
 4. **Ключ сессии** — см. «Модель диалога» ниже; история — в сессии Hermes (решение 1 ниже).
 5. **Cron из Алисы.** Задача, созданная в сессии `yandex_alice`, по умолчанию доставит результат в `yandex_alice`,
    где никто не слушает → в `platform_hint` назначить доставку в Telegram (аналог `ALICE_CRON_DELIVER`)
@@ -171,6 +171,87 @@ Completions (старый bridge); плагинная платформа пол�
 Вывод: сессии Hermes закрывают хранение истории; для плагина это штатное поведение шлюза. Для
 `yandex_alice` остаётся открытым вопрос 1 (подтверждения): в отличие от `api_server`, платформа считается
 интерактивной.
+
+## S1: финальность и привязка ответа — вердикт PARTIAL (2026-11-14)
+
+Вопрос: может ли плагинная платформа отличить итог хода от промежуточных отправок и узнать, что ход
+закончился. Проба — `prototypes/s1/`: настоящий `GatewayRunner` с заглушкой-адаптером, которая
+зарегистрирована как `ctx.register_platform` (`PlatformEntry(source="plugin", display_tier="minimal")`,
+`SUPPORTS_MESSAGE_EDITING=False`), агент — скриптованный LLM из `tests/fakes/fake_llm_provider.py`
+Hermes; модели, ключей и расходов нет. Проверено против checkout `3b42157858` (v0.23.1).
+
+Запуск (вывод — журнал вызовов адаптера по сценариям и итог `unittest`):
+
+```sh
+D=$(mktemp -d /tmp/hya-s1-XXXXXX) && cp -r prototypes/s1 "$D/"
+bash "$D/s1/run.sh" <hermes-checkout> <dependency-venv-python> A   # Ran 8 tests … OK
+bash "$D/s1/run.sh" <hermes-checkout> <dependency-venv-python> B   # Ran 4 tests … OK
+rm -rf -- "$D"
+```
+
+`<dependency-venv-python>` — `python` закоммиченного окружения зависимостей Hermes (`prototypes/s1/README.md`).
+Группа A — уровень `minimal`, глобальный стриминг включён, `busy_input_mode: interrupt`; группа B —
+переопределения оператора (`display.tool_progress: all`, `display.interim_assistant_messages: true`,
+`busy_input_mode: queue`). Проба сверяет действующие значения до сценариев. Пиковый RSS процесса — ~245 МБ.
+
+### Правило, подтверждённое экспериментом
+
+- Ход открывает `on_processing_start(event)`, закрывает `on_processing_complete(event, outcome)` —
+  методы `BasePlatformAdapter` (модуль `gateway.platforms.base` целиком в `public-api.md`; в
+  `adding-platform-adapters.md` хуки не описаны — только docstring). Хук приходит через 5–14 мс после итога.
+- **Итог** — отправка с `reply_to == event.message_id` и `metadata["notify"] is True`
+  (`_send_final_text` → `send_final_ledgered`, `gateway/platforms/base.py:4302`, `:4492`).
+- `_interim_send` и префиксы LINE `⚡ ⏳ ⏩ 💾` — только подсказки: многие служебные отправки идут без них.
+  Правило LINE («первая отправка без метки и префикса») в этой версии озвучило бы «📬 No home channel…».
+
+Почему не VALIDATED: документированного сигнала «это итог хода» нет — `reply_to`/`notify` и
+`_interim_send` («Gateway-internal», `gateway/run.py:480`) в руководстве не описаны. Риск изменения без
+шима гасится тестом совместимости (этап 6).
+
+### Отправки за ход
+
+| Сценарий | Что пришло в адаптер (по порядку) | Итог по правилу |
+|---|---|---|
+| Текст (A) | `📬 No home channel…` (без метки, без `reply_to`) → итог (`reply_to`, `notify`) → хук `success` | верно |
+| Инструмент, `minimal` (A) | `📬…` → итог → `success`; прогресса и комментария нет | верно |
+| Длинный текст, стриминг включён глобально (A) | `📬…` → итог целиком → `success`; правок нет | верно |
+| Два `chat_id` параллельно (A) | итоги и хуки каждого в своём чате, без перекрёстков | верно |
+| Инструмент, переопределения оператора (B) | `📬…` → комментарий (`_interim_send`, `reply_to_message_id` в metadata) → `💻 Running echo hi` (**без метки и без `reply_to`**) → итог → `success` | верно |
+| Пустой ответ модели (A) | `📬…` → `⚠️ Empty response … retrying (1–3/3)`, `❌ Model returned no content…` (без меток) → **итог** `⚠️ No reply: … didn't produce a reply…` → `success` | ошибка как обычный итог |
+| Сбой провайдера (A, без цикла восстановления) | `📬…` → `⚠️ The AI model service kept failing…` (без метки) → **итог** `… returned a server error …` → `success` | ошибка как обычный итог |
+| Сбой провайдера, 1 цикл восстановления (B) | `⏳ … retrying automatically …`, `⏳ Automatic recovery gave up…` (только префикс, metadata пуста) → `⚠️…` → итог-ошибка → `success` | ошибка как обычный итог |
+| Вторая фраза в занятый чат, `interrupt` (A) | `↪ Redirected current run…` (`reply_to` = вторая фраза, без `notify`) → итог с `reply_to` **второй** фразы → хук только у первой (`success`); у второй хуков нет | **неверно**: первая закрыта «пустой» |
+| Вторая фраза в занятый чат, `queue` (B) | итог первой → start/`complete` второй → итог второй с `reply_to` **первой** → `complete` первой | **неверно**: follow-up «пустой», его ответ — второй итог открывшего |
+
+### Выводы для адаптера (этап 3)
+
+1. `send()`: итог хода — только `reply_to == message_id` открытого хода + `notify`; всё остальное
+   за ход — не озвучивается (кандидаты в подробности/лог — решение этапа 2). Конец хода — по хуку.
+2. **Гейт занятой беседы обязателен** (Р2): пока ход беседы открыт, новая фраза в Hermes не передаётся —
+   иначе привязка ломается в обоих режимах `busy_input_mode`.
+3. `outcome == success` не значит «агент ответил»: пустой ответ модели и сбой провайдера приходят итогом
+   с текстом ошибки шлюза (англ., технический). По контракту их не отличить — только по тексту. Как
+   это озвучивать (М6 «честно — не получилось») — вопрос этапа 2.
+4. `📬 No home channel is set…` приходит в каждом новом `chat_id` (каждой новой беседе) — правило его
+   отсекает; поставить ли home channel для `yandex_alice` — S2 / `docs/configuration.md`.
+5. `display.<key>` оператора побеждает уровень `minimal`; стабильнее — `display.platforms.yandex_alice.*`
+   в документации по настройке (этап 7). При `interim_assistant_messages: true` итог в пробе всё равно
+   шёл базовым путём (адаптер без правок); путь через stream consumer не наблюдался.
+6. Холодный первый ход после старта шлюза — ~5 с даже с мгновенным скриптованным LLM; следующие —
+   0,5–1 с накладных. Бюджет 3,5 с для первого хода после перезапуска не гарантирован.
+
+### Ограничения и что не проверено
+
+- Только адаптер без редактирования сообщений и один процесс без мультиплекса профилей (S2).
+- Только по коду: исключение в обработчике — `on_processing_complete(FAILURE)`, **затем** текст ошибки
+  `_notify_turn_error` обычным `send()` вне хода (`base.py:4556–4558`); карточка подтверждения (S4);
+  перезапуск и повторная доставка леджера `send()` вне хода с `RECOVERED_MARKER` (S5); отмена (`CANCELLED`).
+- Не проверено: инструмент `send_message` в свой чат, cron и уведомления фоновых процессов в
+  `yandex_alice`, сжатие контекста. Отправки вне хода — только классификация; политика — этап 2 / S5
+  (решение владельца).
+- Проба опирается на `gateway.run.GatewayRunner` и `tests/…` Hermes — не публичный API; допустимо только
+  в пробе, в адаптер не переносится. В CI GitHub проба не запускается (решение владельца): нужен полный
+  рантайм Hermes; на этапе 6 её заменит тест совместимости адаптера.
 
 ## Что берём из ТЗ и плана v3 (2026-11-14)
 
