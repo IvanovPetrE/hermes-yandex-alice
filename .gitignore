@@ -6,6 +6,7 @@ env
 
 # Локальные настройки и рабочие материалы AI-инструментов — не для публикации
 .claude/
+.agents/
 .opencode/
 AGENTS.md
 CLAUDE.md
