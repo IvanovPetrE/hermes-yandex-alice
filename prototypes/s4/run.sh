@@ -44,6 +44,7 @@ TIMER=()
 if [ -x /usr/bin/time ]; then TIMER=(/usr/bin/time -v); fi
 
 # env -i: nothing from the caller's environment - no real HERMES_HOME, proxies or tokens.
+# S4_RSS_LIMIT_MB=400: the gateway with two PTB apps already reaches ~310 MB at boot (measured).
 # HERMES_TELEGRAM_*: no fallback-IP discovery (DoH) and no text-batch debounce, as Hermes' own
 # Telegram e2e driver sets them. S4_RSS_LIMIT_MB arms the probe's RSS watchdog (exit 137 above it);
 # choom -n 1000 makes the kernel pick the probe, not the live gateway, if memory still runs out.
@@ -60,7 +61,7 @@ exec env -i \
     HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=1 \
     HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS=0 \
     HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS=0 \
-    S4_RSS_LIMIT_MB=300 \
+    S4_RSS_LIMIT_MB=400 \
     timeout 900 nice -n 19 choom -n 1000 -- ${TIMER[@]+"${TIMER[@]}"} "$PY" -I -u -c '
 import sys, runpy
 checkout, here, classes = sys.argv[1:4]
