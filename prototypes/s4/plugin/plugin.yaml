@@ -1,0 +1,5 @@
+name: yandex-alice-s4
+label: Yandex Alice (S4 probe)
+kind: platform
+version: 0.0.1
+description: S4 probe stub - exec approvals as Telegram cards; no network of its own
