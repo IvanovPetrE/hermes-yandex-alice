@@ -598,14 +598,16 @@ class World:
 # --- scenarios -------------------------------------------------------------------------------------
 
 
-def _cmd(victim: Path, pad: int = 0) -> str:
-    return f"rm -r {victim}" + (" # " + "x" * pad if pad else "")
+def _cmd(victim: Path, pad: int = 0, sep: str = " #") -> str:
+    """``sep`` "; :" keeps a long command under Hermes' parser limit: separator-free commands over
+    4096 chars are hardline-blocked (``approval_detection._command_parser_limit_exceeded``)."""
+    return f"rm -r {victim}" + (f"{sep} " + "x" * pad if pad else "")
 
 
-async def _turn_with_card(w: World, scene: str, *responses, pad: int = 0) -> dict:
+async def _turn_with_card(w: World, scene: str, *responses, pad: int = 0, sep: str = " #") -> dict:
     f = _fakes()
     victim = w.make_victim(scene)
-    w.script.add(scene, f.ToolCall("terminal", {"command": _cmd(victim, pad)}), *responses)
+    w.script.add(scene, f.ToolCall("terminal", {"command": _cmd(victim, pad, sep)}), *responses)
     since = len(w.card_calls())
     t0 = await w.start_turn("c-" + scene, "m-" + scene, scene)
     card = await w.wait_card(since)
@@ -724,9 +726,9 @@ async def sc07_held(w: World) -> dict:
                     card_edits=w.card_edits(msg["message_id"]))
 
 
-async def _sc08(w: World, scene: str, pad: int) -> dict:
+async def _sc08(w: World, scene: str, pad: int, sep: str = " #") -> dict:
     f = _fakes()
-    ctx = await _turn_with_card(w, scene, f.Text("Понял, не удаляю."), pad=pad)
+    ctx = await _turn_with_card(w, scene, f.Text("Понял, не удаляю."), pad=pad, sep=sep)
     card = ctx["card"]
     token = card["data"]["deny"].split(":")[2]
     forged = await w.press(TG_OWNER, w.tg_chat, card["message_id"], f"hya:once:{token}")
@@ -740,7 +742,18 @@ async def sc08a_long(w: World) -> dict:
 
 
 async def sc08b_longer(w: World) -> dict:
-    return await _sc08(w, "s08b", 4200)
+    return await _sc08(w, "s08b", 4200, sep="; :")
+
+
+async def sc08c_parser_limit(w: World) -> dict:
+    """Separator-free and over 4096 chars: Hermes blocks it outright, no approval is raised."""
+    f = _fakes()
+    victim = w.make_victim("s08c")
+    w.script.add("s08c", f.ToolCall("terminal", {"command": _cmd(victim, 4200)}), f.Text("Не выполнено."))
+    since = len(w.card_calls())
+    await w.start_turn("c-s08c", "m-s08c", "s08c")
+    await w.wait_complete("m-s08c")
+    return _summary(w, "s08c", dict(victim=victim), cards=len(w.card_calls()) - since)
 
 
 async def sc09_forged(w: World) -> dict:
@@ -819,7 +832,7 @@ async def scC_stranger(w: World) -> dict:
 
 SCENARIOS_A = [("s01", sc01_allow), ("s02", sc02_deny), ("s03", sc03_stranger), ("s04", sc04_late),
                ("s05", sc05_timeout), ("s06a", sc06a_rejected), ("s07", sc07_held), ("s08a", sc08a_long),
-               ("s08b", sc08b_longer), ("s09", sc09_forged), ("s10", sc10_two), ("s11", sc11_busy_dm)]
+               ("s08b", sc08b_longer), ("s08c", sc08c_parser_limit), ("s09", sc09_forged), ("s10", sc10_two), ("s11", sc11_busy_dm)]
 SCENARIOS_B = [("b06", scB_disabled)]
 SCENARIOS_C = [("c01", scC_allow), ("c03", scC_stranger)]
 
@@ -961,6 +974,14 @@ class GroupA(_GroupBase):
             self.assertEqual(r["forged"]["text"], "Этот выбор недоступен")
             self.assertEqual(r["owner"]["text"], "❌ Отклонено")
             self.assertTrue(r["victim_exists"])
+
+    def test_17c_parser_limit_hardline(self) -> None:
+        r = self.res("s08c")
+        self.assertEqual(r["cards"], 0)
+        self.assertEqual(r["prompts"], [])
+        self.assertIn("BLOCKED", " ".join(r["tool"]))
+        self.assertTrue(r["victim_exists"])
+        self.assertEqual(r["finals"], ["Не выполнено."])
 
     def test_18_forged_token(self) -> None:
         self.assertEqual(self.res("s09")["answer"]["text"], TOAST_STALE)
