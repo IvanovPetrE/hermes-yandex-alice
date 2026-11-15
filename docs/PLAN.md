@@ -81,8 +81,12 @@ VALIDATED / PARTIAL / INVALIDATED с командами и ограничени�
   доходят (плагин ещё и в каталоге профиля или `platform_hints`/`display.platforms` — решение владельца);
   адаптеру нужен `validate_config` по секрету области; `allowlist_suppresses_pairing` код привязки при
   маршруте не гасит — нужен `unauthorized_dm_behavior: ignore`.
-- **S3. Telegram.** `platform_registry.get("telegram").standalone_sender_fn(pconfig, chat_id, text)`:
-  какой токен виден в области целевого профиля, результат и ошибки, работа в event loop.
+- **S3. Telegram.** **PARTIAL, 2026-11-15** (`docs/RECON.md`, «S3»; проба `prototypes/s3/`):
+  `standalone_sender_fn` работает из плагина в loop через публичный API, но только со своим `PlatformConfig`
+  из `connect()` (токен бота профиля по умолчанию; без токена — исключение или чужой бот) и отправкой в
+  контексте `connect()` (иначе прокси и уведомления — профиля хода); `dict` не отличает отказ от «возможно
+  дошло», Hermes сам повторяет 5xx/429, длинный текст может дойти частично; первый `get("telegram")` — до 0,9 с
+  синхронно.
 - **S4. Подтверждения.** Что делает базовый `send_exec_approval`; перенос карточки в Telegram:
   `ctx.register_platform_handler("telegram", …)` + `resolve_gateway_approval_card(..., actor_id=…)`.
   Если не выходит — первая версия отклоняет такие действия и говорит об этом.
@@ -131,6 +135,16 @@ SQLite в каталоге данных плагина (`plugins.plugin_storage`
 По выводам S3/S4: доставка подробного ответа, честная ошибка при сбое; подтверждения в Telegram
 одноразовые, с проверкой нажавшего; cron с явным адресом доставки.
 
+Доставка (S3, `docs/RECON.md`, «S3» → «Выводы»):
+- в `connect()`: свой `PlatformConfig` — `token` из `get_scoped_secret("TELEGRAM_BOT_TOKEN")`, чат из
+  `ALICE_TELEGRAM_CHAT`, `extra` — белый список ключей `telegram_*` из `platforms.yandex_alice.extra`;
+  отправитель из реестра (первый `get()` — вне loop); снимок контекста. Нет токена или чата — доставка
+  отключена, отправитель не вызывается;
+- отправка — фоновой задачей в копии контекста `connect()`, вне бюджета ответа Алисе; `notify=True`;
+  общий срок 60 с;
+- итог — `delivered` / `failed` / `uncertain`, в хранилище (этап 4); автоматических повторов нет;
+  озвучка и показ `failed`/`uncertain` и частичной доставки длинного текста — решение владельца (этап 2/5).
+
 ### Этап 6. Тесты
 
 - Unit (без Hermes): протокол, диалог, хранилище, HTTP-обработчик на настоящем loopback.
@@ -147,7 +161,8 @@ SQLite в каталоге данных плагина (`plugins.plugin_storage`
 секреты отдельно), `docs/yandex-dialogs.md` (навык, интенты и их грамматики), `docs/deployment.md`
 (Caddy-пример с подавлением секретного пути в логах, `network_mode: host` для Docker),
 `docs/compatibility.md` (проверенная версия Hermes), `docs/rollback.md`. Примеры — только с
-плейсхолдерами (`example.org`, `<skill-id>`).
+плейсхолдерами (`example.org`, `<skill-id>`). В `docs/configuration.md` — предупреждение: при уровне логов
+DEBUG библиотека Telegram пишет текст подробностей (S3).
 
 ### Этап 8. Стенд, приёмка и переход (сервер, с согласия)
 
