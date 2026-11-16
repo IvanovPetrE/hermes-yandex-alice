@@ -51,9 +51,9 @@ display_tier="minimal", max_message_length=..., allowed_users_env=...)`.
 3. ~~**Какие `send()` приходят за ход**~~ — проверено прототипом S1, вердикт **PARTIAL**: раздел
    «S1: финальность и привязка ответа» ниже.
 4. **Ключ сессии** — см. «Модель диалога» ниже; история — в сессии Hermes (решение 1 ниже).
-5. **Cron из Алисы.** Задача, созданная в сессии `yandex_alice`, по умолчанию доставит результат в `yandex_alice`,
-   где никто не слушает → в `platform_hint` назначить доставку в Telegram (аналог `ALICE_CRON_DELIVER`)
-   или задать `standalone_sender_fn`, пересылающий в Telegram.
+5. ~~**Cron из Алисы.**~~ — проверено пробой S6, вердикт **PARTIAL**: раздел «S6» ниже (`origin` из целевого
+   профиля до адаптера не доходит — `delivery_failed`; страховка — хук `pre_tool_call` при создании задачи, только
+   если плагин есть и в целевом профиле; `telegram:<чат>` — только чат с маршрутом в целевой профиль).
 6. ~~**Где лежит плагин при мультиплексе**~~ — проверено пробой S2, вердикт **PARTIAL**: раздел «S2» ниже.
 7. **Авторизация.** Владелец — одна учётка Алисы: `allowed_users_env="ALICE_OWNER_USER_ID"` плюс
    собственная проверка `skill_id`/`user_id` до `handle_message`; `trusted_inbound` не ставить.
@@ -64,9 +64,8 @@ display_tier="minimal", max_message_length=..., allowed_users_env=...)`.
    ничего не восстановил (поправка к М6). **Не закрыто:** строка леджера `pending` (досылка без пометки) и граница
    свежести автопродолжения (3600 с) вживую не проверены; путь «вопрос потерялся» нужно реализовать и покрыть
    тестом на этапах 2–4.
-9. **Встречный вопрос агента (`clarify`)** — открыт, на S6 / этап 2: базовый `send_clarify` шлёт вопрос
-   обычным `send()` без `reply_to`/`notify` — по правилу S1 Алиса его не озвучит, а ход ждёт ответа. Вариант —
-   убрать `clarify` из `platform_toolsets.yandex_alice`.
+9. ~~**Встречный вопрос агента (`clarify`)**~~ — решено (владелец) и проверено пробой S6: `clarify` не входит в
+   `platform_toolsets.yandex_alice`; агент его не видит, встречный вопрос приходит обычным итогом, ход закрывается.
 10. **Отказ при недоставленной карточке** (S4) — агент видит «Command denied by user» и может сказать «вы
     отказали»; подменять ли озвучиваемый итог по метке `failed` — этап 2.
 
@@ -716,8 +715,8 @@ Hermes ничего не восстановил (нет автопродолже
 Вопросы владельцу (до этапа 3 и 2):
 - допустима ли опора адаптера на неназванные в `public-api.md` члены `gateway.platforms.base`
   (`interactive_resume`, `_set_fatal_error`, `_notify_fatal_error`, хуки `on_processing_*`) или нужен запасной путь;
-- что делать с внеходовой отправкой, которую нельзя отличить от ответа (текст ошибки вне хода, досылка без
-  пометки): молчать, озвучивать как «ответ готов» или слать в Telegram.
+- ~~что делать с внеходовой отправкой, которую нельзя отличить от ответа~~ — **решено 2026-11-16 (S6)**: всё
+  неопознанное вне хода уходит в Telegram с подписью «Алиса:» и не озвучивается (раздел «S6»).
 
 ### Ограничения и что не проверено
 
@@ -732,6 +731,126 @@ Hermes ничего не восстановил (нет автопродолже
   часы (потолок backoff 300 с, флаг `NEEDS_ATTENTION`) — по коду.
 - Обвязка опирается на `gateway.run.GatewayRunner`, `gateway.run_plugin_rewire`, `tests.fakes`, `hermes_logging`
   и приватные атрибуты runner'а и адаптера — только в пробе.
+
+## S6: сессия голосовой платформы и cron, созданный голосом — вердикт PARTIAL (2026-11-16)
+
+Вопрос: может ли плагин в профиле **по умолчанию** мультиплексирующего шлюза, только через публичный API,
+(а) опираться на сессию шлюза как на историю беседы — ключ, история, сжатие; (б) доставить в Telegram результат
+cron, созданного голосом, а не потерять его на адресе `origin` (Алиса не может заговорить первой); (в) переслать в
+Telegram с подписью «Алиса:» прочие отправки вне хода; (г) закрыть ход без `clarify`? Проба — `prototypes/s6/`:
+настоящий `GatewayRunner` с мультиплексом — default (плагин-модель, настоящий Telegram-адаптер на поддельном Bot API
+Hermes) и `p2` (цель маршрута `yandex_alice` и маршрута Telegram-чата владельца с `chat_id`, без своего бота — как
+настоящий целевой профиль), тикер cron и housekeeping шлюза, скриптованный LLM. Группы: A — плагин только в default;
+B — плагин ещё и в `p2`, `ALICE_TELEGRAM_CHAT` в его `.env` (раскладка A2g из S2); C — плагин в `p2` без этого
+чата. Проверено против checkout `3b42157858` (v0.23.1).
+
+Принятые решения владельца (2026-11-16), под которые строилась проба: результат cron из голосовой сессии — только в
+Telegram, голосом не повторяется; `clarify` не входит в `platform_toolsets.yandex_alice`; всё неопознанное вне хода —
+в Telegram с подписью «Алиса:», не озвучивается; обёртка cron штатная (`cron.wrap_response` не трогаем); хук меняет
+только «алисины» адреса (`origin`, `yandex_alice[:…]`, пустой `deliver` при создании); A2/A3 — решение после пробы.
+
+Запуск (по процессу на группу):
+
+```sh
+D=$(mktemp -d /tmp/hya-s6-XXXXXX) && cp -r prototypes/s6 "$D/"
+for G in A B C; do bash "$D/s6/run.sh" <hermes-checkout> <dependency-venv-python> "$G"; done
+case "$D" in /tmp/hya-s6-*) rm -rf -- "$D" ;; esac
+```
+
+Контрольный прогон из коммита `7349c33`: A `Ran 28 tests in 212.663s OK` (15 чистых `GuardTests`/`ForwardTests` +
+13 со шлюзом), B `Ran 7 tests in 163.787s OK`, C `Ran 3 tests in 23.903s OK`; пиковый RSS 286–295 МБ. Чистый слой —
+без Hermes: `cd prototypes/s6 && python -m unittest probe_s6 -k GuardTests -k ForwardTests`.
+
+### Сессия (K1, K3, Z1)
+
+| Что | Результат |
+|---|---|
+| Ключ | `agent:p2:yandex_alice:dm:<chat_id>`, строка `sessions` (`source=yandex_alice`, `profile_name=p2`, `transport_profile=default`) в `state.db` целевого профиля; `sessions/sessions.json` указывает ключ → id |
+| История | второй ход в тот же `chat_id` видит первый; новый `chat_id` — новая сессия без истории (модель «новый диалог») |
+| Сжатие | срабатывает по порогу (`Preflight compression … >= 96,000`); **ключ и id сессии те же, `parent_session_id` не появляется** — в этой версии сессия сжимается на месте (`message_count` 7 при 32 строках `messages`), вопреки «Session Lineage» в `session-storage.md`; следующий запрос к модели — сводка + хвост, ранние реплики ушли в сводку. Если сводка длиннее истории, Hermes отказывается («summary would have GROWN») и шлёт `⚠ Context is over the compression threshold…` **внутри хода** без `reply_to`/`notify` — правило S1 его не озвучивает |
+
+### Cron из голосовой сессии (C1–C4, H1–H5)
+
+| Сцена | Результат |
+|---|---|
+| C1 без `deliver` (A) | задача получает `deliver=origin`, `origin={platform: yandex_alice, chat_id: <беседа>}`; доставка — `delivery_failed`, `platform 'yandex_alice' not configured/enabled` (строка `deliveries.db` — `failed`). **Адаптер ничего не получает, `standalone_sender_fn` не вызывается** — профиль без бота доставляет только через адаптеры профиля по умолчанию по маршруту с `chat_id` (`cron/scheduler_preflight.py`, `SharedRouteAdapters`), маршрут `yandex_alice` без `chat_id` не годится |
+| C2 `telegram:<чат с маршрутом>` (A) | доставлено ботом профиля по умолчанию: `Cronjob Response: <имя>\n(job_id: …)\n-------------\n\n<ответ>\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder <имя>").`, MarkdownV2, со звуком |
+| C3 `telegram:<чат без маршрута>` (A) | `delivery_failed`, `platform 'telegram' not configured/enabled` — **чат Telegram для cron из целевого профиля обязан быть в маршруте профиля по умолчанию в целевой профиль** |
+| C4 `action=run` из голоса (A) | результат ушёл в Telegram (C2), **и** Hermes вернул его в голосовую беседу внутренним ходом: `on_processing_start(internal=True, message_id=None)`, текст события `[ASYNC DELEGATION COMPLETE — …]` (2391 символ), итог `reply_to=None`, `notify=True` → по правилу S1/S5 это итог, как у автопродолжения после перезапуска; отличие от автопродолжения (у него в S5 `text=""`) — только непустой текст события, в руководстве не описано |
+| H1 хук, плагин только в default (A) | **не вызывался ни разу**: хуки — у менеджера плагинов дома, где идёт ход (`hermes_cli/plugins.py`) |
+| H2 хук, плагин и в `p2` (B) | `create` без `deliver`, `origin`, `yandex_alice:x` → `telegram:<чат>`; `origin,local` → `telegram:<чат>,local`; `local` и `telegram:<чат>` не тронуты; `failure_deliver=origin` → `telegram:<чат>`; `update` без `deliver` у задачи с `local` — `local` остался. Хук получает `tool_name`, `args` и `api_request_id, conversation_id, middleware_trace, session_id, telemetry_schema_version, tool_call_id, turn_id`; `get_session_env("HERMES_SESSION_PLATFORM")` внутри хука — `yandex_alice` |
+| H3 (B) | задача без `deliver` из голоса → хук → `telegram:<чат>` → `ok`, сообщение в Telegram |
+| H4 (C) | в области `p2` хук **не видит** `ALICE_TELEGRAM_CHAT` из `.env` профиля по умолчанию → ничего не меняет, задача остаётся `origin` (потерялась бы) |
+| H5 (B) | ход из Telegram-чата целевого профиля с `cronjob_manage create`: хук видит `platform=telegram` и не трогает, задача `origin=telegram`, ответ в чат пришёл |
+
+### `clarify` и отправки вне хода (Q1–Q3, O1)
+
+- `platform_toolsets.yandex_alice: [cronjob, todo]` → агент видит только `cronjob_manage`, `todo_list`; `clarify` нет.
+  Встречный вопрос текстом — обычный итог (`reply_to`+`notify`), `complete(success)`; принудительный вызов —
+  `Tool 'clarify' does not exist. Available tools: …`, ход закрывается итогом; `send_clarify` не вызывался.
+- Ошибка после закрытого хода (как R6 S5) → `send()` вне хода → в Telegram `Алиса:\n\nSorry, I encountered an error…`
+  ботом профиля по умолчанию (свой `PlatformConfig` из `connect()`, путь S3), `delivered`.
+- Внутри открытого хода ни одна отправка не переслана (строгая проверка): `📬 No home channel…`, `⏰ Scheduling create`
+  (прогресс инструмента без метки), `⚠ Context is over…`.
+
+### Решение владельца по C4 (2026-11-16)
+
+Итог внутреннего хода озвучивается как незабранный ответ (М3) **только** если у плагина в этой беседе есть «вопрос
+в работе» без итога (перезапуск, S5); иначе — в Telegram с подписью «Алиса:», голосом не звучит (результат `run`,
+фоновой задачи, делегирования). Опора — состояние плагина (этап 4), а не текст Hermes. Дубль с результатом cron в
+Telegram при `run` возможен и принят.
+
+### Почему PARTIAL, а не VALIDATED
+
+Критерий записан до прогона: VALIDATED — без опоры на неописанное и без настроек плагина в целевом профиле.
+- Страховка от потери задачи с `origin` есть только при **плагине в каталоге целевого профиля** (`plugins.enabled`) и
+  `ALICE_TELEGRAM_CHAT` в **его** `.env` (B); без этого остаётся только подсказка (её в целевой профиль приносит тоже
+  A2 или `platform_hints` — A3, S2), а промах модели — тихая потеря (`delivery_failed`, `hermes cron list`).
+- Доставка из профиля без бота держится на `SharedRouteAdapters` (маршрут с `chat_id`) — в руководстве плагинов не
+  описано; сжатие на месте расходится с `session-storage.md`; признак «внутренний ход не автопродолжение» (текст
+  события) не описан — поэтому решение по C4 опирается на состояние плагина.
+
+### Выводы для адаптера (этапы 2–5)
+
+1. **История — сессия шлюза**, ключ по `chat_id` беседы стабилен и после сжатия; своей истории не нужно (решение 1).
+   «Новый диалог»/М2 — новый `chat_id` (подтверждено).
+2. **cron из голоса**: `platform_hint` велит ставить `deliver=telegram:<чат>`; страховка — хук `pre_tool_call` на
+   `cronjob_manage` по `cron_guard.guard_args` (переносится из `prototypes/s6/plugin/` в `yandex-alice/` с тестами).
+   Хук работает **только при A2** (плагин и в целевом профиле + `ALICE_TELEGRAM_CHAT` в его `.env`, без
+   `ALICE_PATH_SECRET` — второго адаптера нет, `validate_config`); выбор A2/A3 — решение владельца (см. ниже).
+3. **Инвариант хука**: никогда не бросает (исключение/таймаут `pre_tool_call` Hermes считает блоком инструмента
+   **всех** сессий целевого профиля, в том числе его Telegram); выход сразу для чужих инструментов и не-голосовых
+   сессий; в манифесте — `provides_hooks: [pre_tool_call]` (иначе `plugins validate` даёт `ok: false`, «undeclared
+   hooks registered»).
+4. **Чат Telegram** (`ALICE_TELEGRAM_CHAT`) для cron из целевого профиля должен быть в маршруте
+   `gateway.profile_routes` профиля по умолчанию в целевой профиль (`platform: telegram`, `chat_id`), иначе отказ
+   (C3) — в `docs/configuration.md` (этап 7).
+5. **`send()` вне хода**: не служебная (`_interim_send`) и не восстановленная (пометка леджера) → Telegram с подписью
+   «Алиса:» (`recovery.forward_text`), не озвучивается; внутри хода не-итог — ни озвучки, ни пересылки. Итог
+   внутреннего хода — по решению C4 (состояние плагина).
+6. **`clarify`** — не включать в `platform_toolsets.yandex_alice`; `cronjob` — включить (иначе голосом напоминание не
+   поставить).
+7. **`📬 No home channel is set for Yandex_Alice…`** приходит в каждой новой беседе внутри хода; правило его отсекает;
+   ставить ли home channel — этап 7.
+
+Вопросы владельцу (до этапа 3):
+- раскладка **A2** (плагин ещё и в целевом профиле, `ALICE_TELEGRAM_CHAT` в его `.env`; хук работает, подсказка и
+  уровень `minimal` доходят; цена — хук на каждом инструменте всех сессий целевого профиля и две копии плагина) или
+  **A3** (`platform_hints` в config целевого профиля; без хука, промах модели — потеря задачи).
+
+### Ограничения и что не проверено
+
+- Один процесс, временный дом, loopback; настоящий Telegram, реальные модели и живой шлюз — нет.
+- **Агент в обвязке работает в процессе шлюза.** Настоящий шлюз ведёт ход в управляемом рабочем процессе (он и ставит
+  `HERMES_GATEWAY_SESSION=1` — без него `cronjob_manage` агенту не предлагается, `tools/cronjob_tools.py`,
+  `check_cronjob_requirements`; обвязка задаёт его в `run.sh`). Срабатывание хука и область `get_scoped_secret` в
+  рабочем процессе — **не проверены**; проверить на стенде (этап 8) или тестом совместимости (этап 6).
+- Задачи cron выполнялись отдельными процессами-исполнителями (`owner_pid` в `deliveries.db`); их поведение при
+  перезапуске шлюза не проверялось.
+- Не проверены: `send_message` агента в свой голосовой чат, фоновые процессы и делегирование (по C4 — тот же
+  внутренний ход, по коду), `deliver=all`, `attach_to_session`, `cron` вне процесса шлюза.
+- Обвязка опирается на `gateway.run.GatewayRunner`, `gateway.run_bootstrap`, `tests.fakes`, `hermes_cli.plugin_validate`,
+  чтение `state.db`/`jobs.json`/`deliveries.db` и приватные атрибуты runner'а и адаптера — только в пробе.
 
 ## Что берём из ТЗ и плана v3 (2026-11-14)
 

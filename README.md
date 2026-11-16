@@ -20,6 +20,8 @@ prototypes/s1/     проба S1 (финальность ответа) — за�
 prototypes/s2/     проба S2 (профиль и profile_routes) — запуск вручную против checkout Hermes
 prototypes/s3/     проба S3 (подробности в Telegram) — запуск вручную против checkout Hermes
 prototypes/s4/     проба S4 (подтверждения через Telegram) — запуск вручную против checkout Hermes
+prototypes/s5/     проба S5 (жизненный цикл и перезапуск шлюза) — запуск вручную против checkout Hermes
+prototypes/s6/     проба S6 (сессия и cron из голоса) — запуск вручную против checkout Hermes
 docs/PLAN.md       план работ
 docs/RECON.md      разведка
 ```
