@@ -304,7 +304,9 @@ class Llm:
         user = _last_user_text(body)
         if last.get("role") == "tool":
             return f.Text("Готово: команда выполнена.")
-        if "[System note" in user:  # the auto-resume turn: Hermes' note, alone (stop) or after the question (kill)
+        # The auto-resume turn: Hermes' note, alone (stop) or after the question (kill). Other
+        # "[System note" texts (first-turn tips) are not a resume.
+        if "[System note: The previous turn was interrupted" in user:
             if self.resume_mode == "tool":
                 return f.ToolCall("terminal", {"command": f"rm -r {self.victim}"})
             if self.slow2:
