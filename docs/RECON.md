@@ -844,13 +844,59 @@ Telegram при `run` возможен и принят.
   уровень `minimal` доходят; цена — хук на каждом инструменте всех сессий целевого профиля и две копии плагина) или
   **A3** (`platform_hints` в config целевого профиля; без хука, промах модели — потеря задачи).
 
+### S6b: у голосового хода нет рабочего процесса — вердикт VALIDATED (2026-11-16)
+
+Вопрос: если шлюз ведёт ход в управляемом рабочем процессе (`agent/managed_worker.py`), сработает ли там хук
+`pre_tool_call` плагина целевого профиля и увидит ли он `ALICE_TELEGRAM_CHAT`? **Допущение неверно для `yandex_alice`**
+(Hermes v0.23.1, `3b42157858`, код сервера):
+- `gateway/session_ingress.py` → `managed_policy` (`gateway/session_managed_worker.py`) → `policy_for_source`
+  (`gateway/session_policy.py`): политика есть **только** для `Platform.LOCAL` (локальные CLI/desktop-сессии), и то при
+  `gateway.managed_workers: true` и `provider=custom` с `base_url`. Ход платформы идёт в процессе шлюза. В живых конфигах
+  ключа `managed_workers` нет. Остальные пользователи рабочего процесса — cron и kanban, не голосовые сессии.
+- `register_worker_hooks` регистрирует shell hooks и outbound webhooks из замороженного конфига, а не хуки плагинов.
+- **Поправка к S6:** `HERMES_GATEWAY_SESSION` шлюз не ставит (`hermes_cli/gateway_runtime_start.py` его даже вычищает);
+  `cronjob_manage` предлагается из-за `HERMES_EXEC_ASK=1`, который ставит `start_gateway()` (`gateway/run_bootstrap.py`;
+  проверка — `tools/cronjob_tools.py`, `check_cronjob_requirements`). S6 ставил не ту переменную; на вывод это не влияет.
+
+Проба — `prototypes/s6b/`: обвязка S6, плагин-копия с `pid` в записях и файловым журналом, `gateway.managed_workers: true`
+в **обоих** профилях (default и `p2`), `HERMES_EXEC_ASK=1` вместо `HERMES_GATEWAY_SESSION=1`, шпион на `subprocess.Popen`.
+Проверено на сервере; команды:
+
+```sh
+D=$(mktemp -d /tmp/hya-s6b-XXXXXX)   # от hermes, права 700; выложить prototypes/s6 и prototypes/s6b (git archive HEAD)
+for G in B C; do bash "$D/s6b/run.sh" <hermes-checkout> <dependency-venv-python> "$G"; done
+case "$D" in /tmp/hya-s6b-*) rm -rf -- "$D" ;; esac
+```
+
+Контрольный прогон из коммита `6791921`: B `Ran 7 tests in 172.006s OK` (пик RSS 288 МБ), C `Ran 5 tests in 26.510s OK`
+(284 МБ).
+
+| Сцена | Результат |
+|---|---|
+| W0 рабочего процесса нет | `policy_for_source` на источнике голосового хода (`platform=yandex_alice`) → `None`; у шлюза нет сессионных authority (`authorities=0`: ход платформы идёт мимо них); ни одного запуска `agent.managed_worker` за прогон (38 запусков в B и 19 в C — `git`, `gh`, `systemctl`, `uname`, `python`) |
+| W1 шпион работает | видит процесс, запущенный самой пробой (`python -c pass`), и прочие запуски шлюза |
+| W2 (B) | хук сработал в **pid шлюза** (совпадает с pid записи), `platform=yandex_alice`, `chat_set=true`, `merged=[deliver]`; `deliver` задачи → `telegram:<чат>`; `HERMES_EXEC_ASK=1`, `HERMES_GATEWAY_SESSION` не задан |
+| W3 (B) | задача из голоса дошла до Telegram: строка `deliveries.db` — `delivered`, `owner_pid` = pid шлюза (исполнитель cron — внутри процесса, `InProcessCronScheduler`); сообщение в Bot API есть |
+| W4 (C) | в `.env` p2 нет чата → `chat_set=false`, `merged=[]`, `deliver=origin` — как S6 H4 |
+| validate | `ok: true`, «declared hooks: matches registrations» (с `provides_hooks: [pre_tool_call]`) |
+
+**Ответ.** Хук целевого профиля срабатывает **в процессе шлюза**, видит `ALICE_TELEGRAM_CHAT` из `.env` профиля (при A2) и
+не видит его без этого (группа C); задача из голоса доходит до Telegram. «Рабочий процесс» голосового хода не существует,
+так что старый вопрос снят. Рекомендация по раскладке — в `docs/PLAN.md`, этап 1 (решение остаётся владельцу).
+
+Оговорки: проверена обвязка (`GatewayRunner` + `run_bootstrap`), а не `hermes gateway run`; положительного контроля «рабочий
+процесс виден» нет (его нет у `yandex_alice` по коду; для LOCAL-сессий не гонялся); если платформенные сессии когда-нибудь
+получат управляемый рабочий процесс — срабатывание хука и область `get_scoped_secret` пересмотреть (тест совместимости,
+этап 6). Побочный факт: в ходе прогона шлюз запускает `python -m hermes_cli.main --profile default gateway`, который
+переживает пробу (родитель — init) и держит удалённые файлы временного дома; повторный запуск на том же каталоге даёт
+`FATAL: session storage stopped writing…`. После прогона такой процесс завершать (проверять `HERMES_HOME` в
+`/proc/<pid>/environ`).
+
 ### Ограничения и что не проверено
 
 - Один процесс, временный дом, loopback; настоящий Telegram, реальные модели и живой шлюз — нет.
-- **Агент в обвязке работает в процессе шлюза.** Настоящий шлюз ведёт ход в управляемом рабочем процессе (он и ставит
-  `HERMES_GATEWAY_SESSION=1` — без него `cronjob_manage` агенту не предлагается, `tools/cronjob_tools.py`,
-  `check_cronjob_requirements`; обвязка задаёт его в `run.sh`). Срабатывание хука и область `get_scoped_secret` в
-  рабочем процессе — **не проверены**; проверить на стенде (этап 8) или тестом совместимости (этап 6).
+- Рабочий процесс для голосового хода — снято пробой S6b (см. выше): его нет; `HERMES_GATEWAY_SESSION` в S6 заменён на
+  настоящий `HERMES_EXEC_ASK`.
 - Задачи cron выполнялись отдельными процессами-исполнителями (`owner_pid` в `deliveries.db`); их поведение при
   перезапуске шлюза не проверялось.
 - Не проверены: `send_message` агента в свой голосовой чат, фоновые процессы и делегирование (по C4 — тот же

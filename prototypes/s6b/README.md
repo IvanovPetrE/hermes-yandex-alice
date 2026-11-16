@@ -43,4 +43,8 @@ for G in B C; do bash "$D/s6b/run.sh" <hermes-checkout> <hermes-python> "$G"; do
 case "$D" in /tmp/hya-s6b-*) rm -rf -- "$D" ;; esac
 ```
 
+После прогона проверить, что шлюз пробы не оставил `python -m hermes_cli.main --profile default gateway`
+(родитель — init, `HERMES_HOME` в `/proc/<pid>/environ` — временный дом); такой процесс завершить до удаления
+каталога, иначе повторный запуск на том же каталоге даёт `FATAL: session storage stopped writing…`.
+
 Группа B ждёт тикера cron (60 с) и drain доставки (60 с); память ~260–300 МБ на группу.
