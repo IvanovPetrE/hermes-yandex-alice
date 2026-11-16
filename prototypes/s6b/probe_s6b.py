@@ -136,9 +136,11 @@ class SpyWorld(base.World):
         """W0: ``managed_policy`` and the platform of every live session of every authority."""
         from gateway.session_authorities import all_authorities
         from gateway.session_managed_worker import managed_policy
+        from gateway.session_policy import policy_for_source
 
         out = []
-        for authority in all_authorities(self.runner):
+        authorities = all_authorities(self.runner)
+        for authority in authorities:
             for sid, live in list(getattr(authority, "sessions", {}).items()):
                 platform = getattr(getattr(live, "source", None), "platform", None)
                 try:
@@ -147,7 +149,16 @@ class SpyWorld(base.World):
                 except Exception as exc:  # noqa: BLE001 - recorded, not hidden
                     result = f"raised {type(exc).__name__}: {str(exc)[:80]}"
                 out.append(dict(platform=str(getattr(platform, "value", platform)), managed_policy=result))
-        return dict(sessions=out)
+        # The decision itself, on the source of a voice turn: what managed_policy asks first.
+        source = self.alice.build_source(chat_id="chat-w0", chat_name="chat-w0", chat_type="dm",
+                                         user_id=base.OWNER_ID, user_name="probe")
+        try:
+            verdict = policy_for_source(self.runner, source)
+            by_source = None if verdict is None else type(verdict).__name__
+        except Exception as exc:  # noqa: BLE001
+            by_source = f"raised {type(exc).__name__}: {str(exc)[:80]}"
+        return dict(authorities=len(authorities), sessions=out, policy_for_voice_source=by_source,
+                    source_platform=str(getattr(source.platform, "value", source.platform)))
 
 
 async def sc_w0(w: SpyWorld) -> dict:
@@ -185,12 +196,13 @@ class _S6bGroup(base._Group):
 
     def test_W0_no_worker_for_a_voice_turn(self) -> None:
         r = self.res("w0")
-        sessions = r["managed"]["sessions"]
-        self.assertIn(base.PLATFORM, {s["platform"] for s in sessions}, sessions)
-        self.assertEqual([s for s in sessions if s["managed_policy"] is not None], [], sessions)
+        managed = r["managed"]
+        self.assertEqual(managed["source_platform"], base.PLATFORM, managed)
+        self.assertIsNone(managed["policy_for_voice_source"], managed)
+        self.assertEqual([s for s in managed["sessions"] if s["managed_policy"] is not None], [], managed)
         workers = [s for s in self.w.spawns if "agent.managed_worker" in s["argv"]]
         self.assertEqual(workers, [], self.w.spawns)
-        print(f"W0 sessions={sessions} env={r['env']}")
+        print(f"W0 managed={managed} env={r['env']}")
 
     def test_W1_spy_sees_a_start(self) -> None:
         mine = [s for s in self.w.spawns if s["argv"][:1] == ["-c"]]
