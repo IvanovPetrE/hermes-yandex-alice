@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run prototype S6b against an installed Hermes checkout, in a throwaway home.
 #
-#   run.sh <hermes-checkout> <hermes-python> <B|C|P>
+#   run.sh <hermes-checkout> <hermes-python> <B|C|L|P>
 #
 # <hermes-python> is the python of Hermes' committed dependency venv (see prototypes/s1/README.md).
 # The probe directories prototypes/s6b AND prototypes/s6 (its harness) must sit side by side in a fresh
@@ -10,13 +10,14 @@
 # full cleanup. The probe binds only ephemeral 127.0.0.1 ports and never reaches Telegram.
 #
 # B: the plugin also in p2 with ALICE_TELEGRAM_CHAT in its .env (W0-W3); C: the plugin in p2 without that
-# chat (W0, W1, W4); P: the pure layer only (GuardTests, ForwardTests, CopyTests), no gateway.
+# chat (W0, W1, W4); L: as B, but p2's plugin is a SYMLINK to the default profile's copy (one copy on disk:
+# L0-L2); P: the pure layer only (GuardTests, ForwardTests, CopyTests), no gateway.
 # Both profiles get gateway.managed_workers: true. HERMES_EXEC_ASK=1 is what start_gateway() sets (and what
 # makes cronjob_manage available); HERMES_GATEWAY_SESSION is deliberately NOT set (S6 set it by hand).
 set -euo pipefail
 
 if [ "$#" -ne 3 ]; then
-    echo "usage: $0 <hermes-checkout> <hermes-python> <B|C|P>" >&2
+    echo "usage: $0 <hermes-checkout> <hermes-python> <B|C|L|P>" >&2
     exit 2
 fi
 CHECKOUT=$1
@@ -25,8 +26,9 @@ GROUP=$3
 case "$GROUP" in
     B) CLS=GroupB ;;
     C) CLS=GroupC ;;
+    L) CLS=GroupL ;;
     P) CLS=GuardTests,ForwardTests,CopyTests ;;
-    *) echo "group must be B, C or P" >&2; exit 2 ;;
+    *) echo "group must be B, C, L or P" >&2; exit 2 ;;
 esac
 
 HERE=$(cd "$(dirname "$0")" && pwd)

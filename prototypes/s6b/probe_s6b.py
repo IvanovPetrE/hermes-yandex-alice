@@ -251,6 +251,60 @@ class GroupC(_S6bGroup):
         print(f"W4 hooks={hooks} job={r['job']}")
 
 
+base.GROUPS["L"] = dict(plugin_p2=True, chat_p2=True)
+
+
+class LinkWorld(SpyWorld):
+    """Group B with ONE plugin directory on disk: ``p2/plugins/<plugin>`` is a symlink to the default profile's copy
+    (Hermes' own advice for in-place development: ``hermes_cli/plugin_dev.py``, "symlink the checkout into plugins/")."""
+
+    def _write_homes(self, base_url: str) -> None:
+        super()._write_homes(base_url)
+        target = self.home / "plugins" / base.PLUGIN_NAME
+        link = self.p2 / "plugins" / base.PLUGIN_NAME
+        base.shutil.rmtree(link)
+        link.symlink_to(target, target_is_directory=True)
+        self.harness["link"] = dict(is_symlink=link.is_symlink(), resolves_to_default=link.resolve() == target.resolve(),
+                                    p2_plugin_entries=sorted(p.name for p in (self.p2 / "plugins").iterdir()))
+
+
+class GroupL(_S6bGroup):
+    GROUP = "L"
+    SCENARIOS = [("w0", sc_w0), ("h3", base.sc_h3)]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.w = LinkWorld(cls.GROUP)
+        try:
+            cls.w.run(cls.SCENARIOS)
+        finally:
+            cls.w.dump()
+            print(f"spawns={json.dumps(cls.w.spawns, ensure_ascii=False)}")
+            print(f"file_journal_ops={sorted({r['op'] for r in cls.w.file_journal()})}")
+
+    def test_L0_one_copy_on_disk_loaded_in_both_homes(self) -> None:
+        link = self.w.harness.get("link") or {}
+        self.assertTrue(link.get("is_symlink") and link.get("resolves_to_default"), link)
+        self.assertEqual(sorted(self.w.harness.get("registers", [])), ["default", base.P2], self.w.harness)
+        self.assertEqual(len(self.w.harness.get("plugin_modules", [])), 2, self.w.harness)
+        print(f"L0 link={link} registers={self.w.harness.get('registers')} modules={self.w.harness.get('plugin_modules')}")
+
+    def test_L1_hook_from_the_linked_plugin_rewrites_deliver(self) -> None:
+        r = self.res("w0")
+        hooks = r["hooks"]
+        self.assertTrue(hooks, "the hook of the linked plugin did not fire")
+        self.assertTrue(all(h["chat_set"] for h in hooks), hooks)
+        self.assertIn("deliver", hooks[0]["merged"], hooks)
+        self.assertEqual((r["job"] or {}).get("deliver"), base.TARGET, r["job"])
+        print(f"L1 hooks={hooks} job={r['job']}")
+
+    def test_L2_voice_job_reaches_telegram(self) -> None:
+        r = self.res("h3")
+        self.assertEqual((r["jobs"].get("h3") or {}).get("deliver"), base.TARGET, r["jobs"])
+        hits = [s for s in r["tg"] if s["chat"] == str(base.TG_OWNER) and "Напоминание h3" in s["text"]]
+        self.assertTrue(hits, r)
+
+
 class CopyTests(unittest.TestCase):
     """The pure modules of the s6b plugin are byte copies of S6's: the S6 verdict about them still holds."""
 
