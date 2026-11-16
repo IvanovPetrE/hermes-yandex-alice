@@ -255,6 +255,11 @@ class Foreign:
     def close(self) -> None:
         self._closed = True
         try:
+            # A thread blocked in accept() keeps the listening socket alive past close(): shut it down first.
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
             self.sock.close()
         except OSError:
             pass
@@ -299,7 +304,7 @@ class Llm:
         user = _last_user_text(body)
         if last.get("role") == "tool":
             return f.Text("Готово: команда выполнена.")
-        if user.startswith("[System note"):  # the auto-resume turn: Hermes' note is the last user row
+        if "[System note" in user:  # the auto-resume turn: Hermes' note, alone (stop) or after the question (kill)
             if self.resume_mode == "tool":
                 return f.ToolCall("terminal", {"command": f"rm -r {self.victim}"})
             if self.slow2:
@@ -827,6 +832,11 @@ async def _child_main() -> None:
     from gateway.run import GatewayRunner
     from gateway.run_plugin_rewire import reload_plugins_verb
 
+    # As `hermes gateway run` does: file handlers (agent.log, gateway.log, errors.log) at logging.level.
+    # Without this the probe's logs would be empty and "no secret in the logs" would prove nothing.
+    from hermes_logging import setup_logging
+
+    setup_logging(mode="gateway")
     runner = GatewayRunner(load_gateway_config())
     ok = await runner.start()
     loop = asyncio.get_running_loop()
@@ -985,6 +995,7 @@ class LifecycleGroup(_Base):
         print(f"R6: complete={r['complete']} sends={r['sends']}")
 
     def test_P2_no_secret_in_any_log(self) -> None:
+        self.assertIn("logs/agent.log", self.res["logs"], "no agent.log: the check would prove nothing")
         self.assertFalse([k for k, v in self.res["logs"].items() if v], self.res["logs"])
 
     def test_validate(self) -> None:
@@ -1048,6 +1059,7 @@ class PortGroup(_Base):
 
     def test_P2_no_secret_in_any_log_at_debug(self) -> None:
         r = self.res["P2"]
+        self.assertGreater(r["sizes"].get("logs/agent.log", 0), 0, "no agent.log: the check would prove nothing")
         self.assertFalse([k for k, v in r["secret_in"].items() if v], r)
         print(f"body mark found in: {r['body_mark_in']} (Hermes core, not the plugin, if any)")
 
