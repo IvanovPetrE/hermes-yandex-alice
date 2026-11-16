@@ -1,0 +1,5 @@
+name: yandex-alice-s6
+label: Yandex Alice (S6 probe)
+kind: platform
+version: 0.0.1
+description: S6 probe stub - gateway session of the voice platform, cron jobs created by voice, out-of-turn sends to Telegram; no network beyond loopback
