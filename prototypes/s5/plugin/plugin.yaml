@@ -1,0 +1,5 @@
+name: yandex-alice-s5
+label: Yandex Alice (S5 probe)
+kind: platform
+version: 0.0.1
+description: S5 probe stub - adapter lifecycle (one loopback listener) and restart recovery; no network beyond loopback
