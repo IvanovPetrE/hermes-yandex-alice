@@ -97,7 +97,7 @@ class Forwarder:
         except Exception as exc:  # noqa: BLE001
             return {"status": "uncertain", "reason": "raised", "exc": type(exc).__name__}
         if isinstance(result, dict) and result.get("success"):
-            return {"status": "delivered", "home": str(get_hermes_home())}
+            return {"status": "delivered", "sender_home": str(get_hermes_home())}
         if isinstance(result, dict) and result.get("error"):
             return {"status": "failed", "error": str(result.get("error"))[:120]}
         return {"status": "uncertain", "reason": "unexpected_result"}

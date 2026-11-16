@@ -413,7 +413,8 @@ class World:
             from hermes_cli.plugin_validate import validate_plugin_dir
 
             report = validate_plugin_dir(HERE / "plugin", None)
-            self.validate = {"ok": bool(report.ok), "warnings": [str(w) for w in report.warnings]}
+            self.validate = {"ok": bool(report.ok), "warnings": [str(w) for w in report.warnings],
+                             "checks": [[str(n), bool(ok), str(d or "")[:200]] for n, ok, d in report.checks]}
         except Exception as exc:  # noqa: BLE001
             self.validate = {"error": f"{type(exc).__name__}: {exc}"}
 
@@ -631,7 +632,8 @@ async def sc_z1(w: World) -> dict:
     try:
         for i in range(1, 7):
             token = f"z{i}"
-            w.script.add(token, f.Text(f"Ответ {token}"))
+            # Real bulk, not only reported tokens: otherwise Hermes refuses a summary longer than the history.
+            w.script.add(token, f.Text(f"Ответ {token}. " + "Подробности беседы. " * 300))
             aux_before = sum(1 for r in list(w.llm.requests) if r.get("kind") == "aux")
             res = await w.turn("chat-z", f"m-{token}", token)
             snap = w.sessions("chat-z")

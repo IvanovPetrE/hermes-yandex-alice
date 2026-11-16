@@ -53,8 +53,10 @@ if [ -x /usr/bin/time ]; then TIMER=(/usr/bin/time -v); fi
 # env -i: nothing from the caller's environment - no real HERMES_HOME, proxies or tokens.
 # S6_RSS_LIMIT_MB=450: one gateway with one PTB app is ~260 MB (S1-S5); the watchdog exits 137 above it.
 # HERMES_TELEGRAM_*: no fallback-IP discovery (DoH) and no text-batch debounce, as Hermes' own Telegram
-# e2e driver sets them. choom -n 1000 makes the kernel pick the probe, not the live gateway, if memory
-# still runs out.
+# e2e driver sets them. HERMES_GATEWAY_SESSION=1: a real gateway runs each turn in a managed worker that
+# sets it (agent/managed_worker.py); the harness runs the agent in-process, and without it cronjob_manage
+# is not offered at all (tools/cronjob_tools.py, check_cronjob_requirements). choom -n 1000 makes the
+# kernel pick the probe, not the live gateway, if memory still runs out.
 exec env -i \
     PATH=/usr/local/bin:/usr/bin:/bin \
     LANG=C.UTF-8 \
@@ -68,6 +70,7 @@ exec env -i \
     HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=1 \
     HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS=0 \
     HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS=0 \
+    HERMES_GATEWAY_SESSION=1 \
     S6_RSS_LIMIT_MB=450 \
     timeout 1500 nice -n 19 choom -n 1000 -- ${TIMER[@]+"${TIMER[@]}"} "$PY" -I -u -c '
 import sys, runpy
