@@ -1,0 +1,7 @@
+name: yandex-alice-s6
+label: Yandex Alice (S6b probe)
+kind: platform
+version: 0.0.1
+description: S6b probe stub - the S6 plugin plus the pid and a file journal; shows where the pre_tool_call hook of a voice turn runs; no network beyond loopback
+provides_hooks:
+  - pre_tool_call
