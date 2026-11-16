@@ -379,7 +379,8 @@ class World:
                 adapters=sorted(str(getattr(k, "value", k)) for k in runner.adapters),
                 p2_adapters=sorted(str(getattr(k, "value", k)) for k in p2map) if isinstance(p2map, dict) else str(p2map),
                 failed_platforms=sorted(str(getattr(k, "value", k)) for k in (getattr(runner, "_failed_platforms", None) or {})),
-                plugin_modules=sorted(n for n in sys.modules if n.startswith(MODULE_PREFIX) and "." not in n[len(MODULE_PREFIX):]),
+                plugin_modules=sorted(n for n in list(sys.modules)
+                                      if n.startswith(MODULE_PREFIX) and "." not in n[len(MODULE_PREFIX):]),
                 registers=[self._where(r["home"]) for r in self.journal("register")],
                 connects=[dict(home=self._where(r["home"]), forward=r["forward_enabled"], reason=r["reason"])
                           for r in self.journal("connect")])
