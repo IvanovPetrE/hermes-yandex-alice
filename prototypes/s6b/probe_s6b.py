@@ -42,6 +42,25 @@ from probe_s6 import ForwardTests, GuardTests  # noqa: E402,F401  (pure layer, r
 
 base.HERE = HERE  # World copies, validates and loads the plugin from HERE / "plugin"
 
+
+def _guard_temp_home() -> Path:
+    """The S6 guard (not the real home, not unset) for a ``hya-s6b-*`` temp dir instead of ``hya-s6-*``."""
+    import pwd  # POSIX only
+
+    raw = os.environ.get("HERMES_HOME", "").strip()
+    if not raw:
+        raise SystemExit("refusing: HERMES_HOME is not set (run through run.sh)")
+    home = Path(raw).resolve()
+    real_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+    if real_home == home or real_home in home.parents:
+        raise SystemExit(f"refusing: HERMES_HOME {home} is inside the real home of this user")
+    if not any(p.name.startswith("hya-s6b-") for p in home.parents):
+        raise SystemExit(f"refusing: HERMES_HOME {home} is not under a hya-s6b-* temp dir")
+    return home
+
+
+base._guard_temp_home = _guard_temp_home
+
 MANAGED = "  managed_workers: true\n"
 
 
