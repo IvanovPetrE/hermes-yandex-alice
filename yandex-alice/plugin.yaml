@@ -1,11 +1,13 @@
 # Черновик манифеста: поля сверены с adding-platform-adapters.md (Hermes v0.23.1),
-# на живом Hermes ещё не проверялся (`hermes plugins validate` — после появления adapter.py).
+# `hermes plugins validate` — на сервере после установки (этап 3, срез «б», б3).
 name: yandex-alice
 label: Yandex Alice
 kind: platform
 version: 0.0.1
 description: Яндекс Алиса как платформа шлюза Hermes — голосовой ответ с удержанием сессии, подробности в Telegram
 requires_hermes: ">=0.23.1"
+provides_hooks:
+  - pre_tool_call
 requires_env:
   - name: ALICE_PATH_SECRET
     description: "Секретная часть пути webhook навыка (64 hex)"
