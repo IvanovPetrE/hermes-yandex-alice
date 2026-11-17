@@ -120,7 +120,7 @@ class Tick:
 
 @dataclass(frozen=True)
 class GatewayStarted:
-    """Первый connect() адаптера в процессе шлюза — не переподключение (S5, L4): ход агента мог потеряться."""
+    """connect() адаптера — первый в процессе шлюза и переподключение (S5, L4; этап 4): ход агента мог потеряться."""
     now: float
 
 
@@ -204,6 +204,11 @@ def _clock(st: State, now: float, settings: Settings) -> tuple[State, tuple[obje
     if st.answer is None and (st.prompt in (READY, TG_FAILED)
                               or (st.prompt in (WAIT, NEW_OR_OLD) and st.question is None)):
         st = replace(st, prompt=IDLE, held="")
+    if (st.question is None and st.answer is None and not st.holding and st.last_owner_at is not None
+            and now - st.last_owner_at >= settings.unclaimed_ttl):
+        # тексты — персональные данные: после суток тишины владельца не храним (этап 4, решение владельца)
+        st = replace(st, last_said="", last_reply="", last_turn="", reading=(), reading_pos=0, held="", prompt=IDLE,
+                     announce="", notice="")
     return st, acts
 
 

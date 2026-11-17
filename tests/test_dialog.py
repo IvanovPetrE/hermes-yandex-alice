@@ -4,6 +4,7 @@
 """
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "yandex-alice"))
@@ -542,6 +543,36 @@ class UnclaimedTtlTests(unittest.TestCase):
     def test_ttl_is_a_setting(self):
         _, acts = d.step(ready(), d.Tick(now=95.0 + 60), d.Settings(unclaimed_ttl=60.0))
         self.assertEqual(acts, (d.Telegram(CONV, "Алиса:\nСолнечно."),))
+
+
+def talked() -> d.State:
+    """Беседа после озвученного ответа, читаемого по частям: тексты лежат в состоянии, вопроса и ответа нет."""
+    return d.State(conversation=CONV, prompt=d.CONTINUE, held="фраза", last_owner_at=100.0,
+                   reading=("Часть 1.", "Часть 2."), reading_pos=1, last_said="Продолжить?", last_turn="s1-5",
+                   last_reply="Продолжить?", answered=True)
+
+
+class TextRetentionTests(unittest.TestCase):
+    """Решение владельца 2026-11-17 (этап 4): тексты беседы хранятся до 24 ч тишины владельца."""
+
+    def test_texts_are_wiped_after_a_day_of_silence(self):
+        st, acts = d.step(talked(), d.Tick(now=100.0 + DAY))
+        self.assertEqual(acts, ())
+        self.assertEqual((st.last_said, st.last_reply, st.last_turn, st.reading, st.reading_pos, st.held, st.prompt),
+                         ("", "", "", (), 0, "", d.IDLE))
+
+    def test_pending_phrases_are_wiped_too(self):
+        st, _ = d.step(replace(talked(), announce="Не получилось, попробуйте ещё раз.", notice="Предупреждение."),
+                       d.Tick(now=100.0 + DAY))
+        self.assertEqual((st.announce, st.notice), ("", ""))
+
+    def test_texts_are_kept_until_the_day_is_over(self):
+        self.assertEqual(d.step(talked(), d.Tick(now=100.0 + DAY - 1)), (talked(), ()))
+
+    def test_texts_are_kept_while_a_question_is_in_work(self):
+        busy = replace(talked(), question=d.Question(asked_at=100.0))
+        st, _ = d.step(busy, d.Tick(now=100.0 + DAY))
+        self.assertEqual((st.last_said, st.reading), ("Продолжить?", ("Часть 1.", "Часть 2.")))
 
 
 REJECTED_TEXTS = ("/new", "а" * 1001, "стоп\x01")
