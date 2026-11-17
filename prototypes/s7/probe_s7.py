@@ -143,6 +143,22 @@ class HistoryTests(unittest.TestCase):
             self.h._LOCK.release()
         self.assertEqual((out["outcome"], out["why"]), ("error", "busy"))
 
+    def test_steps_are_filled_while_the_worker_runs_and_returned(self) -> None:
+        class NoSession:
+            def find_session_by_origin(self, **kw):
+                return None
+
+        trace: dict = {}
+        out = self.h.read_last_answer(PLATFORM, "chat", db=NoSession(), steps=trace)
+        self.assertEqual(out["outcome"], "missing")
+        self.assertIs(out["steps"], trace)
+        self.assertIn("find", trace)
+
+    def test_a_given_path_skips_the_routes_step(self) -> None:
+        out = self.h.read_last_answer(PLATFORM, "chat", db_path=Path("/nonexistent/state.db"))
+        self.assertEqual((out["outcome"], out["why"]), ("error", "no_state_db"))
+        self.assertNotIn("profile", out)
+
     def test_a_failing_db_is_an_error_outcome_and_frees_the_lock(self) -> None:
         class Boom:
             def find_session_by_origin(self, **kw):
@@ -592,9 +608,15 @@ def sc_a6(c: Ctx) -> dict:
 
 
 def sc_a7(c: Ctx) -> dict:
-    cold = c.child.cmd("bench", 120, chat="chat-a", n=20, warm=False)
+    """cold_uncached: routes -> profile -> path on every read; cold_cached: the path resolved in connect();
+    warm: one open handle (not a stage-3 shape, the floor)."""
+    uncached = c.child.cmd("bench", 120, chat="chat-a", n=20, warm=False, cached=False)
+    cached = c.child.cmd("bench", 120, chat="chat-a", n=20, warm=False, cached=True)
     warm = c.child.cmd("bench", 120, chat="chat-a", n=20, warm=True)
-    return dict(cold=cold, warm=warm)
+    connect = next((r for r in c.stand.rows() if r["op"] == "connect"), {})
+    return dict(cold_uncached=uncached, cold_cached=cached, warm=warm,
+                connect=dict(resolved=connect.get("resolved"), profile=connect.get("profile"),
+                             resolve_ms=connect.get("resolve_ms")))
 
 
 def sc_a8(c: Ctx) -> dict:
@@ -787,7 +809,11 @@ def restart_b3(root: Path, llm: Llm) -> dict:
     ctx = Ctx(stand, c2, llm)
     rows2 = _observe(stand, c2, mark)
     res["rows2"] = _compact(rows2)
-    res["recall_after_ledger"] = ctx.recall(chat)
+    res["stats_before_recall"] = c2.cmd("stats", 20)
+    res["recall_after_ledger"] = ctx.recall(chat)   # the first read of the new process, 1.5 s deadline
+    res["recall_after_ledger_2"] = ctx.recall(chat, deadline=5.0)
+    res["recall_after_ledger_3"] = ctx.recall(chat, deadline=5.0, use_cache=False)
+    res["stats_after_recall"] = c2.cmd("stats", 20)
     res["view_after"] = ctx.view(chat)
     res["stop2"] = stop_gracefully(c2)
     c1.close()
@@ -821,7 +847,13 @@ def _stats() -> dict:
         fds = len(os.listdir("/proc/self/fd"))
     except OSError:
         fds = -1
-    return dict(threads=threading.active_count(), fds=fds, rss_mb=_vmrss_mb("self"))
+    try:
+        load1 = float(Path("/proc/loadavg").read_text().split()[0])
+        mem = next(int(line.split()[1]) // 1024 for line in Path("/proc/meminfo").read_text().splitlines()
+                   if line.startswith("MemAvailable:"))
+    except (OSError, ValueError, StopIteration):
+        load1, mem = -1.0, -1
+    return dict(threads=threading.active_count(), fds=fds, rss_mb=_vmrss_mb("self"), load1=load1, mem_available_mb=mem)
 
 
 async def _child_main() -> None:
@@ -864,7 +896,7 @@ async def _child_main() -> None:
             task.add_done_callback(tasks.discard)
             return {}
         if op == "recall":
-            kw = {k: cmd[k] for k in ("tail", "portions", "force_profile") if k in cmd}
+            kw = {k: cmd[k] for k in ("tail", "portions", "force_profile", "use_cache") if k in cmd}
             return await a.probe_recall(cmd["chat"], float(cmd.get("deadline", 1.5)), **kw)
         if op == "bench":
             stop: list = []
@@ -885,7 +917,7 @@ async def _child_main() -> None:
                         r = await asyncio.to_thread(history.read_last_answer, PLATFORM, cmd["chat"], db=db)
                         ms = (time.perf_counter() - t) * 1000
                     else:
-                        r = await a.probe_recall(cmd["chat"], 5.0)
+                        r = await a.probe_recall(cmd["chat"], 5.0, use_cache=bool(cmd.get("cached", True)))
                         ms = r["took_ms"]
                     times.append(ms)
                     outcomes[r["outcome"]] += 1
@@ -1030,7 +1062,7 @@ class GroupA(_Base):
 
     def test_A7_time(self) -> None:
         r = self.scene("a7")
-        print(f"A7 cold={r['cold']} warm={r['warm']}")
+        print(f"A7 uncached={r['cold_uncached']} cached={r['cold_cached']} warm={r['warm']} connect={r['connect']}")
 
     def test_A8_reads_during_a_turn_and_a_write_lock(self) -> None:
         r = self.scene("a8")
@@ -1094,7 +1126,8 @@ class GroupB(_Base):
     def test_B3_kill_inside_the_final_send(self) -> None:
         r = self.scene("b3")
         print(f"B3 held={r['held']} while_held={r['recall_while_final_is_held']} after_ledger={r['recall_after_ledger']} "
-              f"rows2={r['rows2']}")
+              f"2={r['recall_after_ledger_2']} 3={r['recall_after_ledger_3']} stats={r['stats_before_recall']} -> "
+              f"{r['stats_after_recall']} rows2={r['rows2']}")
 
 
 if __name__ == "__main__":

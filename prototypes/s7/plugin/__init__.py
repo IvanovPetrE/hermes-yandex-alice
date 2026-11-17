@@ -19,7 +19,6 @@ import asyncio
 import json
 import logging
 import os
-import threading
 import time
 from pathlib import Path
 
@@ -58,12 +57,23 @@ class AliceS7(BasePlatformAdapter):
         self.interactive_resume = bool(extra.get("interactive_resume", False))
         self._open = {}  # chat -> message id of the open turn
         self._n = 0
+        self._profile = self._db_path = None
         _rec("create", adapter_id=id(self))
 
     async def connect(self, *, is_reconnect=False):
+        # The conversation-independent part of the history chain, once: routes -> profile -> state.db path.
+        t0 = time.perf_counter()
+        try:
+            self._profile, self._db_path = await asyncio.to_thread(history.resolve_db_path, PLATFORM)
+            import hermes_state  # noqa: F401  (warms the import so the first read does not pay for it)
+            resolved = True
+        except Exception as exc:  # noqa: BLE001 - a failure here only means every read resolves for itself
+            self._profile = self._db_path = None
+            resolved = type(exc).__name__
         self._running = True
         self._mark_connected()
-        _rec("connect", is_reconnect=is_reconnect)
+        _rec("connect", is_reconnect=is_reconnect, resolved=resolved, profile=self._profile,
+             resolve_ms=round((time.perf_counter() - t0) * 1000, 1))
         return True
 
     async def disconnect(self):
@@ -122,14 +132,20 @@ class AliceS7(BasePlatformAdapter):
         await self.handle_message(MessageEvent(text=text, message_type=MessageType.TEXT,
                                                source=source, message_id=message_id))
 
-    async def probe_recall(self, chat_id, deadline_s=1.5, **kw):
-        """``RecallLast`` -> ``Recalled``: the history read in a worker thread under a deadline."""
+    async def probe_recall(self, chat_id, deadline_s=1.5, use_cache=True, **kw):
+        """``RecallLast`` -> ``Recalled``: the history read in a worker thread under a deadline.
+
+        ``use_cache``: use the state.db path resolved in ``connect()`` (a forced profile always resolves itself).
+        """
         t0 = time.perf_counter()
+        trace = {}
+        if use_cache and self._db_path is not None and not kw.get("force_profile"):
+            kw["db_path"] = self._db_path
         try:
             res = await asyncio.wait_for(
-                asyncio.to_thread(history.read_last_answer, PLATFORM, str(chat_id), **kw), deadline_s)
+                asyncio.to_thread(history.read_last_answer, PLATFORM, str(chat_id), steps=trace, **kw), deadline_s)
         except asyncio.TimeoutError:
-            res = dict(outcome=history.ERROR, text=None, why="deadline", steps={}, parts=0)
+            res = dict(outcome=history.ERROR, text=None, why="deadline", steps=dict(trace), parts=0)
         except Exception as exc:  # noqa: BLE001
             res = dict(outcome=history.ERROR, text=None, why=type(exc).__name__, steps={}, parts=0)
         res["took_ms"] = round((time.perf_counter() - t0) * 1000, 1)
@@ -137,15 +153,6 @@ class AliceS7(BasePlatformAdapter):
         _rec("recall", chat=str(chat_id), outcome=res["outcome"], why=res.get("why"), took_ms=res["took_ms"],
              head=(res.get("text") or "")[:60])
         return res
-
-
-def process_stats():
-    """Threads and open file descriptors of this process (the harness compares them before/after storms)."""
-    try:
-        fds = len(os.listdir("/proc/self/fd"))
-    except OSError:
-        fds = -1
-    return dict(threads=threading.active_count(), fds=fds)
 
 
 def _validate(config):

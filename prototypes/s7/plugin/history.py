@@ -88,12 +88,25 @@ def _summary(rows):
                  active=r.get("active"), summary=bool(r.get("_compressed_summary"))) for r in rows[-6:]]
 
 
-def read_last_answer(platform, chat_id, *, tail=TAIL, portions=MAX_PORTIONS, force_profile=None, db=None):
+def resolve_db_path(platform, force_profile=None):
+    """``(profile, path of the target profile's state.db)`` - the part of the chain that does not depend on the
+    conversation. The stage-3 adapter would run it once in ``connect()`` and keep the path."""
+    from gateway.config import load_gateway_config
+
+    profile = force_profile or pick_profile(load_gateway_config().profile_routes, platform)
+    return profile, target_home(profile) / "state.db"
+
+
+def read_last_answer(platform, chat_id, *, tail=TAIL, portions=MAX_PORTIONS, force_profile=None, db=None,
+                     db_path=None, steps=None):
     """Run the whole chain; return a dict with ``outcome`` (found / missing / error), ``text``, ``why`` and timings.
 
-    ``db`` (probe only): a warm read-only handle to reuse instead of opening one per read.
+    ``db`` (probe only): a warm read-only handle to reuse instead of opening one per read. ``db_path``: the path
+    resolved earlier by ``resolve_db_path`` (skips the routes -> profile -> home step). ``steps``: a dict that is
+    filled step by step (milliseconds since the start) so a caller that gave up at a deadline still sees how far
+    the worker got.
     """
-    out = dict(outcome=ERROR, text=None, why=None, steps={}, parts=0)
+    out = dict(outcome=ERROR, text=None, why=None, steps={} if steps is None else steps, parts=0)
     if not _LOCK.acquire(blocking=False):
         out["why"] = "busy"
         return out
@@ -105,13 +118,12 @@ def read_last_answer(platform, chat_id, *, tail=TAIL, portions=MAX_PORTIONS, for
 
     try:
         if handle is None:
-            from gateway.config import load_gateway_config
-
-            profile = force_profile or pick_profile(load_gateway_config().profile_routes, platform)
-            out["profile"] = profile
-            home = target_home(profile)
+            if db_path is None:
+                profile, path = resolve_db_path(platform, force_profile)
+                out["profile"] = profile
+            else:
+                path = db_path
             mark("route")
-            path = home / "state.db"
             if not path.exists():
                 out["why"] = "no_state_db"
                 return out
