@@ -2,7 +2,9 @@
 
 Одна строка SQLite — снимок `dialog.State` в JSON после каждого шага машины: незабранный ответ, вопрос в работе, исход
 доставки (`Answer.undelivered`, `notice`) и дедупликация ретрая (`last_turn`/`last_reply`) — это поля самого состояния,
-второй модели того же нет. Соединение передаёт адаптер (`plugins.plugin_storage.plugin_db`), тесты — свой SQLite.
+второй модели того же нет. Отдельная таблица `outbox` (этап 5) — очередь отправок в Telegram до исхода: текст, части для
+«Озвучить?», число начатых попыток; строка удаляется с исходом (`delivery.Courier`). Соединение передаёт адаптер
+(`plugins.plugin_storage.plugin_db`), тесты — свой SQLite.
 """
 from __future__ import annotations
 
@@ -11,13 +13,18 @@ import sqlite3
 from dataclasses import asdict
 
 try:
+    from . import delivery
     from . import dialog as d
 except ImportError:  # тесты импортируют модули плагина как модули верхнего уровня
+    import delivery  # type: ignore[no-redef]
     import dialog as d  # type: ignore[no-redef]
 
 VERSION = 1
 BUSY_MS = 200   # пишет только этот адаптер; 5 с из plugin_db больше бюджета ответа Алисе (~3,5 с)
 _SCHEMA = "CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL)"
+# Отправки в Telegram до исхода (этап 5): строка удаляется с исходом; снимок `state` и его VERSION не затрагиваются.
+_OUTBOX = ("CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation TEXT NOT NULL, "
+           "text TEXT NOT NULL, fallback TEXT NOT NULL, created_at REAL NOT NULL, attempts INTEGER NOT NULL)")
 
 # Типы полей — явно, а не из аннотаций: формат записи меняется только вместе с VERSION.
 STR, FLOAT, INT, BOOL, TEXTS, FLOATS = "str", "float", "int", "bool", "texts", "floats"
@@ -97,6 +104,7 @@ class Store:
         conn.execute("PRAGMA synchronous=NORMAL")   # без fsync на каждом шаге: падение процесса записи не теряет
         with conn:
             conn.execute(_SCHEMA)
+            conn.execute(_OUTBOX)
 
     def load(self) -> d.State | None:
         row = self._conn.execute("SELECT data FROM state WHERE id = 1").fetchone()
@@ -105,6 +113,43 @@ class Store:
     def save(self, state: d.State) -> None:
         with self._conn:
             self._conn.execute("INSERT OR REPLACE INTO state (id, data) VALUES (1, ?)", (encode(state),))
+
+    # --- отправки в Telegram до исхода (этап 5) ---------------------------------------------------------------------
+
+    def add(self, conversation: str, text: str, fallback: tuple[str, ...], created_at: float) -> int:
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO outbox (conversation, text, fallback, created_at, attempts) VALUES (?, ?, ?, ?, 0)",
+                (conversation, text, json.dumps(list(fallback), ensure_ascii=False), created_at))
+        return int(cur.lastrowid)
+
+    def started(self, send_id: int) -> None:
+        """Попытка началась — до вызова отправителя: обрыв после этого считается оборванной попыткой."""
+        with self._conn:
+            self._conn.execute("UPDATE outbox SET attempts = attempts + 1 WHERE id = ?", (send_id,))
+
+    def done(self, send_id: int) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM outbox WHERE id = ?", (send_id,))
+
+    def pending(self) -> list[delivery.Pending]:
+        """Отправки без исхода в порядке постановки; кривая строка удаляется (начать без неё)."""
+        rows = self._conn.execute(
+            "SELECT id, conversation, text, fallback, created_at, attempts FROM outbox ORDER BY id").fetchall()
+        out, bad = [], []
+        for sid, conversation, text, fallback, created_at, attempts in rows:
+            try:
+                parts = json.loads(fallback)
+                if not isinstance(parts, list) or not all(isinstance(x, str) for x in parts):
+                    raise _Bad
+                out.append(delivery.Pending(id=sid, conversation=conversation, text=text, fallback=tuple(parts),
+                                            created_at=_number(created_at), attempts=int(attempts)))
+            except (_Bad, ValueError, TypeError):
+                bad.append(sid)
+        if bad:
+            with self._conn:
+                self._conn.executemany("DELETE FROM outbox WHERE id = ?", [(sid,) for sid in bad])
+        return out
 
     def close(self) -> None:
         self._conn.close()

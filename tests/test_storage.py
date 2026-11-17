@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "yandex-alice"))
+import delivery  # noqa: E402
 import dialog as d  # noqa: E402
 import storage  # noqa: E402
 
@@ -90,6 +91,51 @@ class StoreTests(unittest.TestCase):
         store.save(FULL)
         store.save(d.State(conversation="c2"))
         self.assertEqual(self.open().load(), d.State(conversation="c2"))
+
+
+class OutboxTests(unittest.TestCase):
+    """Отправки в Telegram до исхода (этап 5): переживают перезапуск, исход удаляет текст."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "state.db"
+
+    def open(self) -> "storage.Store":
+        store = storage.Store(sqlite3.connect(self.path))
+        self.addCleanup(store.close)
+        return store
+
+    def test_a_send_survives_restart_with_its_attempts(self) -> None:
+        store = self.open()
+        sid = store.add("c1", "Алиса:\nподробно", ("Часть.",), 100.0)
+        store.started(sid)
+        self.assertEqual(self.open().pending(),
+                         [delivery.Pending(id=sid, conversation="c1", text="Алиса:\nподробно", fallback=("Часть.",),
+                                           created_at=100.0, attempts=1)])
+
+    def test_sends_come_back_in_order_and_done_removes_one(self) -> None:
+        store = self.open()
+        first, second = store.add("c1", "раз", (), 1.0), store.add("c1", "два", (), 2.0)
+        store.done(first)
+        self.assertEqual([r.text for r in self.open().pending()], ["два"])
+        self.assertLess(first, second)
+
+    def test_a_broken_row_is_dropped(self) -> None:
+        store = self.open()
+        sid = store.add("c1", "раз", (), 1.0)
+        conn = sqlite3.connect(self.path)
+        with conn:
+            conn.execute("UPDATE outbox SET fallback = '[1' WHERE id = ?", (sid,))
+        conn.close()
+        self.assertEqual(self.open().pending(), [])
+        self.assertEqual(self.open().pending(), [])   # удалена, а не пропущена один раз
+
+    def test_the_state_snapshot_is_untouched_by_sends(self) -> None:
+        store = self.open()
+        store.save(FULL)
+        store.add("c1", "раз", (), 1.0)
+        self.assertEqual(self.open().load(), FULL)
 
 
 if __name__ == "__main__":
