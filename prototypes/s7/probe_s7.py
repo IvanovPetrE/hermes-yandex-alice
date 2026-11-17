@@ -902,9 +902,10 @@ async def _child_main() -> None:
             seq = [await a.probe_recall(cmd["chat"], deadline) for _ in range(n)]
             conc = await asyncio.gather(*[a.probe_recall(cmd["chat"], deadline) for _ in range(n)])
             await asyncio.sleep(4)
-            return dict(sequential=dict(Counter((r["outcome"], r.get("why")) for r in seq).most_common()),
-                        concurrent=dict(Counter((r["outcome"], r.get("why")) for r in conc).most_common()),
-                        stats_after=_stats())
+            def tally(results: list) -> dict:   # JSON keys are strings: "outcome/why"
+                return dict(Counter(f"{r['outcome']}/{r.get('why')}" for r in results))
+
+            return dict(sequential=tally(seq), concurrent=tally(conc), stats_after=_stats())
         if op == "stop":
             await runner.stop()
             return {}
@@ -1041,6 +1042,9 @@ class GroupA(_Base):
         self.assertEqual(r["normal_after"]["text"], "Ответ a1", r["normal_after"])
         before, after = r["before"], r["after"]
         print(f"A9 before={before} after={after} storm={r['storm']}")
+        self.assertTrue(r["storm"] and r["storm"].get("ok"), r["storm"])   # the storm itself must have run
+        self.assertLessEqual(r["storm"]["stats_after"]["threads"] - before["threads"], 3, r["storm"])
+        self.assertLessEqual(r["storm"]["stats_after"]["fds"] - before["fds"], 10, r["storm"])
         self.assertLessEqual(after["threads"] - before["threads"], 3, (before, after))
         self.assertLessEqual(after["fds"] - before["fds"], 10, (before, after))
 
