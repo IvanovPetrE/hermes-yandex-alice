@@ -704,6 +704,11 @@ class RecallTests(unittest.TestCase):
                 _, acts = d.step(st, d.Recalled(now=100.1, text=None, outcome=outcome))
                 self.assertEqual(acts, (d.Say(FAILED),))
 
+    def test_repeat_after_a_failed_turn_says_failed(self):   # S7, Р-S7-4: в истории — заглушка (empty), не «No reply…»
+        st, _ = d.step(answered(), utter("повтори", REPEAT))
+        _, acts = d.step(st, d.Recalled(now=100.1, text="(empty)"))
+        self.assertEqual(acts, (d.Say(FAILED),))
+
     def test_missing_in_a_new_dialog_is_nothing_to_repeat(self):
         new, _ = d.step(answered(), utter("новый диалог", "hya.dialog.new", now=110.0, turn="s1-7"))
         fresh_launch = utter("повтори", REPEAT, now=100.0 + 3 * HOUR, turn="s2-1", launch=True)

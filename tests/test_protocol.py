@@ -126,6 +126,18 @@ class GatewayErrorTests(unittest.TestCase):
             with self.subTest(text=text[:30]):
                 self.assertTrue(p.is_gateway_error(text))
 
+    def test_empty_sentinel_of_the_history_is_an_error(self):
+        # S7: при исчерпанных повторах пустого ответа Hermes пишет в историю строку (empty), а «No reply…» — только в чат
+        for text in ("(empty)", "  (empty)\n"):
+            with self.subTest(text=text):
+                self.assertTrue(p.is_gateway_error(text))
+                self.assertEqual(p.spoken(text), ["Не получилось, попробуйте ещё раз."])
+
+    def test_sentinel_inside_a_sentence_is_not_an_error(self):
+        for text in ("(empty) — так записано", "Список (empty)", "(empty) а потом ответ"):
+            with self.subTest(text=text):
+                self.assertFalse(p.is_gateway_error(text))
+
     def test_ordinary_answers_are_not_errors(self):
         for text in ("⚠️ Внимание: завтра гроза.", "Сайт вернул server error, попробую позже.",
                      "No reply: так и не ответил.", "", "Совет: add a backup provider with `hermes fallback add`."):

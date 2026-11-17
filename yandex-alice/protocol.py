@@ -216,12 +216,15 @@ def _strip_markers(raw: str) -> str:
 # Форма 2 — agent/turn_failure_copy.py exhausted_copy (только en). Закрепляется тестом совместимости (этап 6).
 _NO_REPLY_PREFIXES = ("⚠ No reply: ", "⚠ Нет ответа: ")   # сравнение — без U+FE0F
 _EXHAUSTED_MARK = "add a backup provider with `hermes fallback add`.\n\nProvider said: "
+# Форма 3 — только в истории (S7): после исчерпанных повторов пустого ответа Hermes пишет в сессию строку «(empty)»
+# (agent/turn_empty_response.py), а текст «No reply…» уходит в чат и в историю не попадает.
+_EMPTY_SENTINEL = "(empty)"
 
 
 def is_gateway_error(text: str) -> bool:
     """Известная форма текста ошибки шлюза (пустой ответ модели, сбой провайдера), а не ответ агента."""
     text = text.lstrip().replace("️", "")
-    if text.startswith(_NO_REPLY_PREFIXES):
+    if text.strip() == _EMPTY_SENTINEL or text.startswith(_NO_REPLY_PREFIXES):
         return True
     return _EXHAUSTED_MARK in text and " — " in text.split("\n", 1)[0]
 
