@@ -22,3 +22,6 @@ optional_env:
   - name: ALICE_TELEGRAM_CHAT
     description: "Чат Telegram для подробностей, внеходовых ответов и cron из голоса; бот — TELEGRAM_BOT_TOKEN профиля"
     password: false
+  - name: ALICE_TELEGRAM_OWNER_ID
+    description: "user id владельца в Telegram — кто подтверждает команды; пусто — id лички ALICE_TELEGRAM_CHAT, группа без него — подтверждения отключены"
+    password: false

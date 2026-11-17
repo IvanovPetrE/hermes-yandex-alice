@@ -8,6 +8,10 @@
 истории в рабочем потоке), S3 (Telegram: свой `PlatformConfig` с токеном бота своего профиля, отправка в копии контекста
 `connect()`, `notify=True`; очередь, исходы и повтор после обрыва — `delivery`, этап 5). Состояние беседы и отправки до
 исхода — в SQLite плагина (`storage`) и переживают переподключение и перезапуск шлюза; хранилище недоступно — в памяти.
+Подтверждения (S4, этап 5, срез «б»): `_send_exec_approval_prompt` → `approvals.Approvals` → карточка ботом профиля
+по умолчанию (`Application` из фабрики `register_platform_handler`, дом регистрации и токен своей области) → обработчик
+`^hya:` → `resolve_gateway_approval_card` без `actor_id`. Книга карточек — одна на регистрацию плагина (не глобал модуля,
+S5): переживает переподключение адаптера; перезапуск шлюза — нет (решение владельца).
 В логах нет секретного пути, токена, тела запроса и текста реплик; единственный ID — user_id в режиме привязки.
 """
 import asyncio
@@ -23,8 +27,9 @@ from gateway.platforms._shared import get_scoped_secret
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session_context import get_session_env
+from hermes_constants import get_hermes_home
 
-from . import cron_guard, delivery, dialog, engine, entry, history, protocol, sends, storage
+from . import approvals, cron_guard, delivery, dialog, engine, entry, history, protocol, sends, storage
 
 PLATFORM = "yandex_alice"
 PLUGIN_NAME = "yandex-alice"   # каталог данных плагина: plugin-data/<имя>/
@@ -53,6 +58,89 @@ def _telegram_sender():
         return None
 
 
+def _hermes_deny(session_key: str, request_id: str, reason: str) -> int:
+    """Отказ без владельца — только по `request_id` карточки (без него ответил бы самый старый запрос сессии)."""
+    from tools.approval import resolve_gateway_approval
+
+    return resolve_gateway_approval(session_key, "deny", reason=reason, request_id=request_id)
+
+
+def _hermes_resolve(session_key: str, choice: str, request_id: str) -> int:
+    """Нажатие владельца. `actor_id` не передаём: кто нажимает, проверяет плагин (S4, вывод 2)."""
+    from tools.approval import resolve_gateway_approval_card
+
+    return resolve_gateway_approval_card(session_key, choice, request_id)
+
+
+class _CardBot:
+    """`Application.bot` профиля по умолчанию в виде, который ждёт `approvals.Approvals`; PTB — внутри методов."""
+
+    def __init__(self, bot) -> None:
+        self._bot = bot
+
+    async def send(self, chat: int, text: str, buttons: tuple) -> int:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=data) for label, data in buttons]])
+        msg = await self._bot.send_message(chat_id=chat, text=text, parse_mode="HTML", reply_markup=markup)
+        return msg.message_id
+
+    async def edit(self, chat: int, message_id: int, text: str) -> None:
+        await self._bot.edit_message_text(chat_id=chat, message_id=message_id, text=text, parse_mode="HTML")
+
+
+class _TelegramLink:
+    """Связь регистрации плагина с Telegram-адаптером своего дома: последний `Application` из фабрики
+    `register_platform_handler` (переподключение Telegram даёт новый — заменяем, а не копим) и токен своей области из
+    `connect()` адаптера Алисы. Бот годится, только если его токен совпал с этим токеном."""
+
+    def __init__(self, home: str) -> None:
+        self.home = home
+        self.app = None
+        self.token: str | None = None
+        self._warned = False
+
+    def bot(self):
+        app, token = self.app, self.token
+        try:
+            ok = app is not None and token is not None and getattr(app.bot, "token", None) == token
+        except Exception:  # noqa: BLE001 - у приложения ещё нет бота
+            ok = False
+        if not ok:
+            if token is not None and not self._warned:   # Telegram для Алисы включён, а бота своего дома нет
+                self._warned = True
+                logger.warning("telegram approvals: no bot of this profile's telegram adapter (card denied)")
+            return None
+        return _CardBot(app.bot)
+
+    def factory(self, appr: "approvals.Approvals"):
+        def wire(native, _adapter) -> None:
+            """Фабрика Telegram: только `Application` своего дома; нажатия `hya:` — в книгу этой регистрации."""
+            if native is None or str(get_hermes_home()) != self.home:
+                return
+            self.app = native
+            from telegram.ext import CallbackQueryHandler
+
+            async def on_press(update, context) -> None:
+                query = update.callback_query
+                user = getattr(getattr(query, "from_user", None), "id", None)
+                chat = getattr(getattr(getattr(query, "message", None), "chat", None), "id", None)
+                try:
+                    reply = await appr.press(getattr(query, "data", "") or "", user, chat)
+                except Exception as exc:  # noqa: BLE001 - нажатие ничего не разрешило
+                    logger.warning("approval press failed: %s", type(exc).__name__)
+                    reply = approvals.PressReply(approvals.TOAST[approvals.STALE])
+                with contextlib.suppress(Exception):
+                    await query.answer(reply.toast, show_alert=reply.alert)
+                if reply.strip:
+                    with contextlib.suppress(Exception):
+                        await query.edit_message_reply_markup(reply_markup=None)
+
+            native.add_handler(CallbackQueryHandler(on_press, pattern=r"^hya:"))
+
+        return wire
+
+
 def _port(extra: dict):
     try:
         port = int(extra.get("port"))
@@ -65,8 +153,13 @@ class AliceAdapter(BasePlatformAdapter):
     SUPPORTS_MESSAGE_EDITING = False
     interactive_resume = False   # автопродолжение Hermes должно вернуть ответ, а не спросить «что дальше» (S5, вывод 5)
 
-    def __init__(self, config):
+    def __init__(self, config, approvals_: "approvals.Approvals | None" = None, link: "_TelegramLink | None" = None):
         super().__init__(config, Platform(PLATFORM))
+        # Книга карточек и связь с ботом — от регистрации (`register`): переживают новый экземпляр при переподключении.
+        self._link = link if link is not None else _TelegramLink(str(get_hermes_home()))
+        self._appr = approvals_ if approvals_ is not None else approvals.Approvals(_hermes_deny, _hermes_resolve,
+                                                                                    bot=self._link.bot)
+        self._appr_warned = False
         self._extra = dict(getattr(config, "extra", None) or {})
         self._cfg = None
         self._owner_id = ""
@@ -103,6 +196,7 @@ class AliceAdapter(BasePlatformAdapter):
         self._store, loaded = await asyncio.to_thread(self._open_store)
         await self._telegram_setup()
         telegram = self._tg is not None
+        self._approvals_setup(telegram)
         self._courier = delivery.Courier(self._tg_send if telegram else None, self._store, self._delivered)
         # Движок — до listener'а: запрос, пришедший сразу после bind, не должен упереться в None.
         self._engine = engine.Engine(dialog.Settings(telegram=telegram), self._ask, self._recall,
@@ -139,6 +233,10 @@ class AliceAdapter(BasePlatformAdapter):
         # Каждый connect(), и переподключение тоже: состояние из базы могло застать удержание или ход, итог которого
         # этот экземпляр не узнает, — удержание сбрасывается, вопрос в работе идёт по Д9 (решение владельца, этап 4).
         self._engine.on_gateway_started()
+        # Флаг «ждёт подтверждения» из сохранённого состояния — по книге: после перезапуска карточек нет (дальше Д9),
+        # после переподключения живые карточки остались в книге регистрации.
+        conversation = self._engine.state.conversation
+        self._engine.on_approval(conversation, self._appr.awaiting(conversation))
         # Отправки без исхода от прошлого экземпляра: оборванная — один повтор, залежалая или без Telegram — uncertain.
         self._courier.resume(enabled=telegram)
         self._tick = asyncio.ensure_future(self._tick_loop())
@@ -206,6 +304,21 @@ class AliceAdapter(BasePlatformAdapter):
 
         self._tg = (PlatformConfig(enabled=True, token=token, extra=delivery.telegram_extra(self._extra)), chat, sender)
         self._ctx = contextvars.copy_context()
+
+    def _approvals_setup(self, telegram: bool) -> None:
+        """Подтверждения — только при включённом Telegram и известном владельце (`ALICE_TELEGRAM_OWNER_ID`, иначе id
+        лички `ALICE_TELEGRAM_CHAT`); иначе каждая карточка — сразу отказ с текстом «не настроены». Токен своей области —
+        для выбора бота: `_send_exec_approval_prompt` идёт в области профиля хода, секреты там не читаем."""
+        chat = self._tg[1] if telegram else ""
+        self._link.token = self._tg[0].token if telegram else None
+        self._appr.configure(chat, _secret("ALICE_TELEGRAM_OWNER_ID"), enabled=telegram, notify=self._approval_changed)
+        if telegram and not self._appr.enabled and not self._appr_warned:
+            self._appr_warned = True
+            logger.warning("telegram approvals disabled: owner unknown (group chat needs ALICE_TELEGRAM_OWNER_ID)")
+
+    def _approval_changed(self, conversation: str, waiting: bool) -> None:
+        if self._engine is not None:
+            self._engine.on_approval(conversation, waiting)
 
     def _telegram_off(self, reason: str) -> None:
         if not self._tg_warned:
@@ -289,13 +402,19 @@ class AliceAdapter(BasePlatformAdapter):
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         meta = dict(metadata or {})
         chat, text = str(chat_id), content or ""
+        if approvals.is_full_command_block(text, meta):
+            # Всю команду перед урезанной карточкой владелец в голосе не видит: отказ оставляет у Hermes «только
+            # отклонить» (S4, вывод 5); не озвучивается и не пересылается.
+            logger.debug("send: full command block refused, length=%d", len(text))
+            return SendResult(success=False, error="full command is not shown to the owner")
         turn = self._open.get(chat)
         kind = sends.classify_send(open_turn=turn is not None, turn_mid=turn[0] if turn else None,
                                    reply_to=None if reply_to is None else str(reply_to), notify=meta.get("notify"),
-                                   interim=bool(meta.get("_interim_send")), text=text)
+                                   interim=bool(meta.get("_interim_send")), text=text,
+                                   approval_prompt=bool(meta.get("is_approval_prompt")))
         if self._engine is not None:
-            if kind == sends.FINAL:
-                self._engine.on_final(chat, text, turn[1])
+            if kind == sends.FINAL:   # метка хода: карточка не дошла / подтверждения не настроены — своя озвучка
+                self._engine.on_final(chat, text, turn[1], card=self._appr.outcome(chat))
             elif kind == sends.RECOVERED:   # ответ из леджера Hermes после перезапуска: пометка срезается по форме (S5)
                 self._engine.on_final(chat, sends.strip_marker(text), True)
             else:   # вне хода (cron в голос, фон) — в Telegram «Алиса:»; служебное и неитоговое внутри хода — нет (S6)
@@ -309,6 +428,7 @@ class AliceAdapter(BasePlatformAdapter):
     async def on_processing_start(self, event):
         chat, internal = str(event.source.chat_id), bool(getattr(event, "internal", False))
         self._open[chat] = (event.message_id, internal)
+        self._appr.start_turn(chat)
         if self._engine is not None:
             self._engine.on_turn_start(chat, event.message_id, internal)
 
@@ -320,6 +440,23 @@ class AliceAdapter(BasePlatformAdapter):
         self._open.pop(chat, None)
         if self._engine is not None:
             self._engine.on_turn_complete(chat, event.message_id, internal)
+        try:   # живые карточки хода больше ничего не разрешат — сразу «неактуален» (решение владельца 2026-11-17)
+            await self._appr.turn_closed(chat)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("approval turn close failed: %s", type(exc).__name__)
+
+    # --- подтверждения (S4) ----------------------------------------------------------------------------------------
+
+    async def _send_exec_approval_prompt(self, prompt):
+        """Своя карточка в Telegram вместо текста `/approve`; вызов идёт в области профиля хода. Не дошла — запрос
+        уже отклонён по `request_id`, Hermes получает отказ отправки."""
+        card_id = await self._appr.prompt(alice_chat=str(prompt.chat_id), session_key=prompt.session_key,
+                                          request_id=prompt.request_id, command=prompt.command or "",
+                                          description=prompt.description or "",
+                                          smart_denied=bool(prompt.smart_denied), actions=list(prompt.actions or []))
+        if card_id is None:
+            return SendResult(success=False, error="approval card not delivered")
+        return SendResult(success=True, message_id=card_id)
 
     # --- история Hermes («повтори», S7) ----------------------------------------------------------------------------
 
@@ -371,6 +508,13 @@ class AliceAdapter(BasePlatformAdapter):
     # --- то, что платформе не нужно --------------------------------------------------------------------------------
 
     async def edit_message(self, chat_id, message_id, content, *, finalize=False):
+        """Правят только карточку подтверждения: Hermes на таймауте зовёт это с её id — своя строка вместо его
+        английского текста (решение владельца); прочие правки не поддерживаются."""
+        mid = str(message_id)
+        if mid.startswith("hya-card:"):
+            if await self._appr.timed_out(mid):
+                return SendResult(success=True, message_id=mid)
+            return SendResult(success=False, error="approval card is not open")
         return SendResult(success=False, error="Not supported")
 
     async def delete_message(self, chat_id, message_id):
@@ -408,10 +552,19 @@ def cron_hook(tool_name=None, args=None, task_id=None, **kwargs):
 
 
 def register(ctx) -> None:
+    """Каждая регистрация (дом профиля; reload модуля — новая) получает свою книгу карточек и связь с ботом: в раскладке
+    с симлинком модуль грузится отдельно на каждый дом, а фабрика Telegram своего дома берёт только `Application`
+    своего дома."""
+    link = _TelegramLink(str(get_hermes_home()))
+    appr = approvals.Approvals(_hermes_deny, _hermes_resolve, bot=link.bot)
+
+    def make_adapter(config):
+        return AliceAdapter(config, appr, link)
+
     ctx.register_platform(
         name=PLATFORM,
         label="Yandex Alice",
-        adapter_factory=AliceAdapter,
+        adapter_factory=make_adapter,
         check_fn=lambda: True,
         validate_config=validate_config,
         allowed_users_env="ALICE_OWNER_USER_ID",
@@ -420,3 +573,4 @@ def register(ctx) -> None:
         display_tier="minimal",
     )
     ctx.register_hook("pre_tool_call", cron_hook)
+    ctx.register_platform_handler("telegram", link.factory(appr))
