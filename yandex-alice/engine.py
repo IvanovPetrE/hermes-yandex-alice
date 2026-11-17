@@ -19,9 +19,11 @@ import time
 from typing import Awaitable, Callable
 
 try:
+    from . import approvals as ap
     from . import dialog as d
     from . import protocol as p
 except ImportError:  # тесты импортируют модули плагина как модули верхнего уровня
+    import approvals as ap  # type: ignore[no-redef]
     import dialog as d  # type: ignore[no-redef]
     import protocol as p  # type: ignore[no-redef]
 
@@ -99,7 +101,7 @@ class Engine:
         не настроены) или ""."""
         self._finals.add(conversation)
         self._apply(d.Final(now=self._wall(), conversation=conversation, text=text, internal=internal,
-                            card_failed=card == "failed", approvals_off=card == "off"))
+                            card_failed=card == ap.FAILED, approvals_off=card == ap.OFF))
 
     def on_approval(self, conversation: str, waiting: bool) -> None:
         """Ход беседы ждёт нажатия карточки в Telegram (или перестал ждать) — Д8 «Жду подтверждения…»."""

@@ -147,6 +147,8 @@ class Card:
     choices: tuple[str, ...]
     text: str
     created_at: float
+    tg_chat: int | None = None   # чат, куда ушла карточка: правка и нажатие — там, даже если настройки сменились
+    turn: str | None = None      # ход, в котором поднят запрос: конец хода гасит только его карточки
     state: str = "sending"
     tg_message_id: int | None = None
     final_shown: bool = False   # на карточке уже строка итога, кнопок нет
@@ -167,12 +169,12 @@ class Book:
         self._by_id: dict[str, Card] = {}
 
     def open(self, session_key: str, request_id: str | None, alice_chat: str, choices: tuple[str, ...],
-             text: str) -> Card | None:
+             text: str, *, tg_chat: int | None = None, turn: str | None = None) -> Card | None:
         """Новая карточка в `sending`; None без `request_id` или `session_key`."""
         if not request_id or not session_key:
             return None
         card = Card(self._new_card_id(), self._new_token(), session_key, str(request_id), str(alice_chat),
-                    tuple(choices), text, self._clock())
+                    tuple(choices), text, self._clock(), tg_chat=tg_chat, turn=turn)
         with self._lock:
             for old in [c for c in self._by_id.values()
                         if c.state not in LIVE and card.created_at - c.created_at >= self._keep]:
@@ -205,6 +207,13 @@ class Book:
             card.final_shown = True
             return True
 
+    def release_final(self, card_id: str) -> None:
+        """Правка итога не прошла: кнопки остались — следующее устаревшее нажатие попробует снова."""
+        with self._lock:
+            card = self._by_id.get(card_id)
+            if card is not None:
+                card.final_shown = False
+
     def fail(self, card_id: str) -> bool:
         """sending → failed. True — вызывающий обязан отказать в запросе сейчас."""
         with self._lock:
@@ -225,11 +234,11 @@ class Book:
             card = self._by_id.get(card_id)
             return card if card is not None and self._move(card, ("open",), "expired") else None
 
-    def close_chat(self, alice_chat: str) -> list[Card]:
-        """Ход окончен: открытые карточки беседы больше ничего не разрешат."""
+    def close_chat(self, alice_chat: str, turn: str | None = None) -> list[Card]:
+        """Ход `turn` окончен: его открытые карточки больше ничего не разрешат; карточки других ходов беседы живут."""
         with self._lock:
             return [c for c in self._by_id.values()
-                    if c.alice_chat == str(alice_chat) and self._move(c, ("open",), "expired")]
+                    if c.alice_chat == str(alice_chat) and c.turn == turn and self._move(c, ("open",), "expired")]
 
     def press(self, token: str, choice: str, user_id: object, chat_id: object, *, chat: int | None,
               owner: int | None) -> tuple[str, Card | None]:
@@ -239,7 +248,8 @@ class Book:
             card = self._by_token.get(token)
             if card is None:
                 return STALE, None
-            if chat is None or parse_id(chat_id) != chat:
+            home = card.tg_chat if card.tg_chat is not None else chat   # нажатие — только в чате карточки
+            if home is None or parse_id(chat_id) != home:
                 return WRONG_CHAT, card
             if owner is None or parse_id(user_id) != owner:
                 return NOT_OWNER, card
@@ -329,8 +339,9 @@ class Approvals:
         self._log(f"approval denied by plugin: request_id={request_id} count={count}")
 
     async def prompt(self, *, alice_chat: str, session_key: str, request_id: str | None, command: str,
-                     description: str, smart_denied: bool, actions: list) -> str | None:
-        """`_send_exec_approval_prompt`: id карточки, если она дошла; иначе None — запрос уже отклонён."""
+                     description: str, smart_denied: bool, actions: list, turn: str | None = None) -> str | None:
+        """`_send_exec_approval_prompt`: id карточки, если она дошла; иначе None — запрос уже отклонён. `turn` — ход
+        беседы, в котором поднят запрос (`turn_closed` гасит только его карточки)."""
         alice_chat = str(alice_chat)
         if not self.enabled:
             self._outcome[alice_chat] = OFF
@@ -339,7 +350,8 @@ class Approvals:
             self._log(f"approval refused: request_id={request_id} outcome=off")
             return None
         text, whole = render_card(command, description, smart_denied)
-        card = self.book.open(session_key, request_id, alice_chat, offered_choices(actions, whole), text)
+        card = self.book.open(session_key, request_id, alice_chat, offered_choices(actions, whole), text,
+                              tg_chat=self.chat, turn=turn)
         if card is None:   # без request_id отказать нельзя: resolve_* ответил бы на самый старый запрос сессии
             self._outcome[alice_chat] = FAILED
             self._log(f"approval card not opened: request_id={request_id}")
@@ -350,7 +362,7 @@ class Approvals:
             self._failed(card, "no_bot")
             return None
         buttons = tuple((LABELS[c], callback_data(c, card.token)) for c in card.choices)
-        send = asyncio.ensure_future(bot.send(self.chat, text, buttons))
+        send = asyncio.ensure_future(bot.send(card.tg_chat, text, buttons))
         try:
             message_id = await asyncio.wait_for(asyncio.shield(send), self._deadline)
         except asyncio.TimeoutError:
@@ -408,10 +420,10 @@ class Approvals:
         """`on_processing_start`: метка прошлого хода не должна достаться итогу нового."""
         self._outcome.pop(str(alice_chat), None)
 
-    async def turn_closed(self, alice_chat: str) -> None:
-        """`on_processing_complete`: открытые карточки беседы больше ничего не разрешат — сразу «неактуален»
+    async def turn_closed(self, alice_chat: str, turn: str | None = None) -> None:
+        """`on_processing_complete` хода `turn`: его открытые карточки больше ничего не разрешат — сразу «неактуален»
         (Hermes правит карточку только на своём таймауте и только пока ход текущий)."""
-        closed = self.book.close_chat(str(alice_chat))
+        closed = self.book.close_chat(str(alice_chat), turn)
         self._notify(str(alice_chat), self.book.awaiting(str(alice_chat)))
         for card in closed:
             await self._show(card, STALE_LINE)
@@ -433,14 +445,16 @@ class Approvals:
         await self._show(card, STALE_LINE)
 
     async def _show(self, card: Card, line: str) -> bool:
-        """Строка итога под карточкой, кнопки сняты; у карточки — один раз. Сбой правки запрос не меняет."""
+        """Строка итога под карточкой (в её чате), кнопки сняты; у карточки — один раз. Сбой правки запрос не меняет,
+        а право показать итог возвращается: следующее устаревшее нажатие попробует снять кнопки снова."""
         bot = self.bot()
         if bot is None or card.tg_message_id is None or not self.book.claim_final(card.card_id):
             return False
         try:
-            await bot.edit(self.chat, card.tg_message_id, card.text + "\n\n" + line)
+            await bot.edit(card.tg_chat, card.tg_message_id, card.text + "\n\n" + line)
             return True
         except Exception as exc:  # noqa: BLE001
+            self.book.release_final(card.card_id)
             self._log(f"approval card edit failed: request_id={card.request_id} error={type(exc).__name__}")
             return False
 

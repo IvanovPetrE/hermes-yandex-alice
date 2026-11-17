@@ -58,6 +58,12 @@ def _telegram_sender():
         return None
 
 
+def _turn_key(message_id) -> str:
+    """Ход для книги карточек: по `message_id` хода (у внутреннего хода — None), а не по экземпляру адаптера — ключ
+    совпадает и после переподключения."""
+    return f"turn:{message_id}"
+
+
 def _hermes_deny(session_key: str, request_id: str, reason: str) -> int:
     """Отказ без владельца — только по `request_id` карточки (без него ответил бы самый старый запрос сессии)."""
     from tools.approval import resolve_gateway_approval
@@ -441,7 +447,7 @@ class AliceAdapter(BasePlatformAdapter):
         if self._engine is not None:
             self._engine.on_turn_complete(chat, event.message_id, internal)
         try:   # живые карточки хода больше ничего не разрешат — сразу «неактуален» (решение владельца 2026-11-17)
-            await self._appr.turn_closed(chat)
+            await self._appr.turn_closed(chat, _turn_key(event.message_id))
         except Exception as exc:  # noqa: BLE001
             logger.warning("approval turn close failed: %s", type(exc).__name__)
 
@@ -450,10 +456,13 @@ class AliceAdapter(BasePlatformAdapter):
     async def _send_exec_approval_prompt(self, prompt):
         """Своя карточка в Telegram вместо текста `/approve`; вызов идёт в области профиля хода. Не дошла — запрос
         уже отклонён по `request_id`, Hermes получает отказ отправки."""
-        card_id = await self._appr.prompt(alice_chat=str(prompt.chat_id), session_key=prompt.session_key,
+        chat = str(prompt.chat_id)
+        turn = self._open.get(chat)   # вне хода — None: такую карточку конец хода не гасит
+        card_id = await self._appr.prompt(alice_chat=chat, session_key=prompt.session_key,
                                           request_id=prompt.request_id, command=prompt.command or "",
                                           description=prompt.description or "",
-                                          smart_denied=bool(prompt.smart_denied), actions=list(prompt.actions or []))
+                                          smart_denied=bool(prompt.smart_denied), actions=list(prompt.actions or []),
+                                          turn=_turn_key(turn[0]) if turn is not None else None)
         if card_id is None:
             return SendResult(success=False, error="approval card not delivered")
         return SendResult(success=True, message_id=card_id)

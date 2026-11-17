@@ -249,6 +249,7 @@ class FakeBot:
         self.edits: list[tuple[int, int, str]] = []
         self.gate: asyncio.Future | None = None   # задан — отправка ждёт его
         self.error: Exception | None = None
+        self.edit_errors: list[Exception] = []   # очередь сбоев правки: каждая правка снимает по одному
         self.next_id = 41
 
     async def send(self, chat: int, text: str, buttons: tuple) -> int:
@@ -261,6 +262,8 @@ class FakeBot:
         return self.next_id
 
     async def edit(self, chat: int, message_id: int, text: str) -> None:
+        if self.edit_errors:
+            raise self.edit_errors.pop(0)
         self.edits.append((chat, message_id, text))
 
 
@@ -488,6 +491,50 @@ class TurnEndTests(ApprovalsTestCase):
         self.assertEqual(appr.outcome("c1"), "failed")
         appr.start_turn("c1")
         self.assertEqual(appr.outcome("c1"), "")
+
+
+class ReviewFixTests(ApprovalsTestCase):
+    """Правки по /code-review medium (2026-11-17)."""
+
+    async def test_card_is_edited_and_pressed_in_the_chat_it_was_sent_to(self) -> None:
+        """Смена `ALICE_TELEGRAM_CHAT` и переподключение: карточка живёт в чате, куда ушла."""
+        appr = self.make(chat="100")
+        card_id = await self.prompt(appr)
+        [(_chat, _text, buttons)] = self.bot.sent
+        appr.configure("200", "100", enabled=True)   # другой чат, владелец прежний
+        reply = await appr.press(buttons[0][1], OWNER, 100)
+        self.assertEqual(reply.toast, "✅ Разрешено один раз")
+        self.assertEqual([chat for chat, _mid, _text in self.bot.edits], [100])
+        other = await self.prompt(appr, request_id="r2")
+        self.assertTrue(await appr.timed_out(other))
+        self.assertEqual([chat for chat, _mid, _text in self.bot.edits], [100, 200])
+        self.assertTrue(card_id)
+
+    async def test_failed_edit_is_retried_by_the_next_press(self) -> None:
+        """Правка итога не прошла — кнопки остались; следующее нажатие снова пробует их снять."""
+        appr = self.make()
+        card_id = await self.prompt(appr)
+        [(_chat, _text, buttons)] = self.bot.sent
+        self.bot.edit_errors.append(RuntimeError("network"))
+        self.assertFalse(await appr.timed_out(card_id))
+        self.assertEqual(self.bot.edits, [])
+        reply = await appr.press(buttons[0][1], OWNER, CHAT)
+        self.assertEqual(reply.toast, "Запрос неактуален")
+        [(_chat, _mid, text)] = self.bot.edits
+        self.assertTrue(text.endswith("\n\n⌛ Запрос неактуален"))
+
+    async def test_turn_end_closes_only_cards_of_that_turn(self) -> None:
+        """Конец хода не гасит карточку другого запроса той же беседы."""
+        appr = self.make()
+        mine = await appr.prompt(alice_chat="c1", session_key="sk", request_id="r1", command=COMMAND,
+                                 description=REASON, smart_denied=False, actions=ALL_ACTIONS, turn="turn:m1")
+        other = await appr.prompt(alice_chat="c1", session_key="sk", request_id="r2", command=COMMAND,
+                                  description=REASON, smart_denied=False, actions=ALL_ACTIONS, turn="turn:m2")
+        await appr.turn_closed("c1", "turn:m1")
+        self.assertEqual(len(self.bot.edits), 1)
+        self.assertTrue(appr.awaiting("c1"))
+        self.assertTrue(await appr.timed_out(other))
+        self.assertFalse(await appr.timed_out(mine))
 
 
 class LifetimeTests(ApprovalsTestCase):
