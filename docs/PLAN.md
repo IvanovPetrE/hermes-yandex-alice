@@ -242,6 +242,13 @@ settings) -> (state, actions)`, состояние — неизменяемые 
 
 ### Этап 3. Адаптер и HTTP-вход (`yandex-alice/adapter.py`, `yandex-alice/__init__.py`)
 
+Два среза. **Срез «а» — сделан 2026-11-17:** чистые `yandex-alice/history.py` (`last_answer`, `read_tail`, `pick_profile`) и
+`yandex-alice/cron_guard.py` (`guard_args`, публичная `valid_chat`) с тестами `tests/test_history.py`,
+`tests/test_cron_guard.py`. **Срез «б» — адаптер:** всё остальное этапа (`target_home`, `resolve_db_path`, чтение
+`SessionDB` с блокировкой «одно чтение за раз», `register`, HTTP-вход и порядок проверок, связка с `dialog.step`, `send()`,
+гейт Р2, хук). Решено 2026-11-17: `ALICE_TELEGRAM_CHAT` с `:`, пробелом или запятой отвергает `validate_config` через
+`cron_guard.valid_chat` (иначе хук молча не подменил бы адрес и cron из голоса потерялся); топики «чат:тема» не поддерживаются.
+
 - `register(ctx)` → `ctx.register_platform(...)`; лёгкий импорт, listener только в `connect()`; `validate_config` по
   секрету (S2); `disconnect()` — `site.stop` + `runner.cleanup`, `AppRunner(access_log=None)` (S5). Занятый порт —
   `_set_fatal_error("bind_failed", …, retryable=True)` без пути и исключения в тексте, и `interactive_resume = False`:
@@ -261,10 +268,10 @@ settings) -> (state, actions)`, состояние — неизменяемые 
   `connect()` (маршрут `yandex_alice` из `load_gateway_config().profile_routes`, дом `…/profiles/<имя>`); на чтении —
   `SessionDB(read_only=True)` → `find_session_by_origin` → `resolve_resume_session_id` → `get_messages` порциями по 20; правило
   «последнего ответа» (`last_answer`, `read_tail`, `pick_profile`) — **в чистый модуль** (`yandex-alice/history.py`, без Hermes,
-  с тестами) из `prototypes/s7/plugin/history.py`; `/proc` не читать; текст из истории в логи не писать.
+  с тестами; **перенесено срезом «а»**) из `prototypes/s7/plugin/history.py`; `/proc` не читать; текст из истории в логи не писать.
 - По S6 (`docs/RECON.md`, «S6» → «Выводы»): `platform_hint` — правило `deliver=telegram:<чат>` для cron;
   хук `pre_tool_call` на `cronjob_manage` по `cron_guard.guard_args` (перенос из `prototypes/s6/plugin/` с
-  `GuardTests`) — **условно: только при раскладке A2, выбор A2/A3 — решение владельца**; инвариант хука — никогда не
+  `GuardTests`; **перенесено срезом «а»**) — раскладка A2 решена 2026-11-16 (S6b), хук без условий; инвариант хука — никогда не
   бросает, сразу выходит для чужих инструментов и не-голосовых сессий; `provides_hooks: [pre_tool_call]` в
   манифесте. В `platform_toolsets.yandex_alice` целевого профиля — `cronjob`, без `clarify` (`docs/configuration.md`).
 
