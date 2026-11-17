@@ -34,7 +34,8 @@ class Engine:
         self.state = d.State(conversation=new_id())
         self._waiters: list[asyncio.Future[str]] = []
         self._tasks: set[asyncio.Task] = set()
-        self._open: dict[str, asyncio.Event] = {}   # беседа -> сигнал «ход Hermes закрыт»
+        self._open: dict[str, tuple[str | None, asyncio.Event]] = {}   # беседа -> (message_id хода, сигнал «ход закрыт»)
+        self._closed = False
         self._reading: asyncio.Future | None = None  # идущее чтение истории
         self._finals: set[str] = set()               # беседы, где в текущем ходе уже был итог
 
@@ -72,6 +73,7 @@ class Engine:
     async def close(self) -> None:
         """`disconnect()` адаптера: ожидающие запросы получают отказ, фоновые задачи (Ask, чтение) отменяются —
         после переподключения (новый экземпляр) от них ничего не должно остаться."""
+        self._closed = True
         for fut in self._waiters:
             if not fut.done():
                 fut.set_result(p.REPLY_ERROR)
@@ -88,15 +90,18 @@ class Engine:
         self._apply(d.Final(now=self._wall(), conversation=conversation, text=text, internal=internal))
 
     def on_turn_start(self, conversation: str, mid: str | None, internal: bool) -> None:
-        self._open[conversation] = asyncio.Event()
+        self._open[conversation] = (mid, asyncio.Event())
         self._finals.discard(conversation)
         if internal:   # Hermes дозапустил ход после перезапуска (S5): вопрос не потерян
             self._apply(d.InternalStarted(now=self._wall(), conversation=conversation))
 
     def on_turn_complete(self, conversation: str, mid: str | None, internal: bool) -> None:
-        turn = self._open.pop(conversation, None)
+        turn = self._open.get(conversation)
+        if turn is not None and turn[0] != mid:   # запоздалое завершение прошлого хода: новый ход идёт, гейт не трогаем
+            return
+        self._open.pop(conversation, None)
         if turn is not None:
-            turn.set()
+            turn[1].set()
         had_final = conversation in self._finals
         self._finals.discard(conversation)
         if not internal and not had_final:   # пустой внутренний ход вопрос не закрывает (S5, вывод 6)
@@ -113,7 +118,10 @@ class Engine:
     # --- исполнение действий -------------------------------------------------------------------------------------
 
     def _apply(self, event: object) -> tuple[str | None, bool]:
-        """Шаг машины и исполнение действий; `(текст ответа Алисе или None, нужно ли ждать итог)`."""
+        """Шаг машины и исполнение действий; `(текст ответа Алисе или None, нужно ли ждать итог)`.
+        После `close()` события игнорируются: поздний итог или тик не должен породить задач у отключённого адаптера."""
+        if self._closed:
+            return None, False
         self.state, acts = d.step(self.state, event, self.settings)
         say, hold = None, False
         for act in acts:
@@ -155,7 +163,7 @@ class Engine:
         try:
             turn = self._open.get(conversation)
             if turn is not None:
-                await asyncio.wait_for(turn.wait(), self._gate_timeout)
+                await asyncio.wait_for(turn[1].wait(), self._gate_timeout)
             await self._ask(conversation, text)
         except Exception as exc:  # noqa: BLE001 - включая TimeoutError гейта; ни одна ошибка не должна оставить вопрос в работе
             self._log(f"ask failed: {type(exc).__name__}")

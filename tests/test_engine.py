@@ -147,6 +147,20 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RobustnessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_events_after_close_change_nothing_and_start_no_tasks(self) -> None:
+        h = Harness(budget=0.05)
+        await h.engine.handle(rq("вопрос"))
+        await h.engine.close()
+        before = h.engine.state
+        h.engine.on_final(h.conv, "Поздний ответ", False)
+        h.engine.on_turn_complete(h.conv, "m1", False)
+        h.engine.on_gateway_started()
+        h.engine.tick()
+        self.assertEqual(h.engine.state, before)
+        self.assertEqual(h.engine._tasks, set())
+        self.assertEqual(await h.engine.handle(rq("ещё", mid="2")), p.REPLY_ERROR)   # отключённый движок не спрашивает шлюз
+        self.assertEqual(len(h.asks), 1)
+
     async def test_an_unexpected_error_is_a_polite_reply_and_logs_only_the_class(self) -> None:
         h = Harness()
 
@@ -220,6 +234,20 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         await settle()
         self.assertEqual(h.asks, [])
         h.engine.on_turn_complete(h.conv, None, True)
+        await settle()
+        self.assertEqual(h.asks, [(h.conv, "вопрос")])
+        h.engine.on_final(h.conv, "Ответ", False)
+        self.assertEqual(await task, "Ответ")
+
+    async def test_a_stale_completion_does_not_open_the_gate_for_a_newer_turn(self) -> None:
+        h = Harness(budget=1.0, gate_timeout=0.5)
+        h.engine.on_turn_start(h.conv, "m1", True)
+        h.engine.on_turn_start(h.conv, "m2", True)
+        h.engine.on_turn_complete(h.conv, "m1", True)   # запоздалое завершение прошлого хода
+        task = asyncio.create_task(h.engine.handle(rq("вопрос")))
+        await settle()
+        self.assertEqual(h.asks, [])                      # m2 ещё идёт
+        h.engine.on_turn_complete(h.conv, "m2", True)
         await settle()
         self.assertEqual(h.asks, [(h.conv, "вопрос")])
         h.engine.on_final(h.conv, "Ответ", False)

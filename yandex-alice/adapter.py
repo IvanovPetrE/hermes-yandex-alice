@@ -61,7 +61,7 @@ class AliceAdapter(BasePlatformAdapter):
         self._engine = None
         self._runner = self._site = self._tick = None
         self._open = {}                 # chat_id -> (message_id открытого хода, внутренний ли он)
-        self._asks = self._sends = 0
+        self._sends = 0
         self._db_path = None
         self._read_lock = threading.Lock()
         self._unbound = entry.OnceNote(logger.warning)
@@ -81,6 +81,9 @@ class AliceAdapter(BasePlatformAdapter):
             return self._fail("config_invalid", "platforms.yandex_alice.extra.port is not a valid port", retryable=False)
         self._owner_id = _secret("ALICE_OWNER_USER_ID")
         self._cfg = entry.EntryConfig(secret=secret, skill_id=skill, owner_user_id=self._owner_id)
+        # Движок — до listener'а: запрос, пришедший сразу после bind, не должен упереться в None.
+        self._engine = engine.Engine(dialog.Settings(telegram=False), self._ask, self._recall,
+                                     new_id=lambda: "alice-" + uuid.uuid4().hex[:12])
 
         from aiohttp import web
 
@@ -94,6 +97,7 @@ class AliceAdapter(BasePlatformAdapter):
         except OSError:
             with contextlib.suppress(Exception):
                 await runner.cleanup()
+            self._engine = None
             return self._fail("bind_failed", "could not bind the loopback port", retryable=True)
         self._runner, self._site = runner, site
 
@@ -102,8 +106,6 @@ class AliceAdapter(BasePlatformAdapter):
         except Exception as exc:  # noqa: BLE001 - тогда каждое чтение определит путь само
             logger.warning("history path not resolved: %s", type(exc).__name__)
             self._db_path = None
-        self._engine = engine.Engine(dialog.Settings(telegram=False), self._ask, self._recall,
-                                     new_id=lambda: "alice-" + uuid.uuid4().hex[:12])
         if not is_reconnect:   # первый connect() процесса шлюза: ход агента мог потеряться (S5, L4)
             self._engine.on_gateway_started()
         self._tick = asyncio.ensure_future(self._tick_loop())
@@ -116,13 +118,13 @@ class AliceAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         if self._tick is not None:
             self._tick.cancel()
-            with contextlib.suppress(BaseException):
-                await self._tick
+            await asyncio.gather(self._tick, return_exceptions=True)   # отмена самого disconnect() не глотается
         if self._site is not None:
             with contextlib.suppress(Exception):
                 await self._site.stop()
         if self._engine is not None:   # ожидающие запросы получают ответ до runner.cleanup, иначе он ждёт обработчики
-            await self._engine.close()
+            engine_, self._engine = self._engine, None
+            await engine_.close()
         if self._runner is not None:
             with contextlib.suppress(Exception):
                 await self._runner.cleanup()
@@ -178,11 +180,12 @@ class AliceAdapter(BasePlatformAdapter):
     # --- ход Hermes ------------------------------------------------------------------------------------------------
 
     async def _ask(self, conversation: str, text: str) -> None:
-        self._asks += 1
         source = self.build_source(chat_id=conversation, chat_name="Alice", chat_type="dm",
                                    user_id=self._owner_id, user_name="owner")
+        # id хода уникален между экземплярами адаптера: счётчик с единицы после переподключения совпал бы со старым
         await self.handle_message(MessageEvent(text=text, message_type=MessageType.TEXT, source=source,
-                                               message_id=f"alice-{self._asks}", allow_gateway_control=False))
+                                               message_id="alice-" + uuid.uuid4().hex[:12],
+                                               allow_gateway_control=False))
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         meta = dict(metadata or {})
@@ -208,6 +211,9 @@ class AliceAdapter(BasePlatformAdapter):
 
     async def on_processing_complete(self, event, outcome):
         chat, internal = str(event.source.chat_id), bool(getattr(event, "internal", False))
+        current = self._open.get(chat)
+        if current is not None and current[0] != event.message_id:   # запоздалое завершение прошлого хода
+            return
         self._open.pop(chat, None)
         if self._engine is not None:
             self._engine.on_turn_complete(chat, event.message_id, internal)
