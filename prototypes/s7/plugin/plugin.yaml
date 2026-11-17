@@ -1,0 +1,5 @@
+name: yandex-alice-s7
+label: Yandex Alice (S7 probe)
+kind: platform
+version: 0.0.1
+description: S7 probe stub - reading a voice conversation's last answer from Hermes' history; no network beyond loopback
