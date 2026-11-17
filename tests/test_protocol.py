@@ -327,5 +327,19 @@ class IntentTests(unittest.TestCase):
         self.assertEqual(p.intents({"intents": {}}), ("valid", ()))
 
 
+class HintTests(unittest.TestCase):
+    """`platform_hint` (этап 5): формат «ГОЛОС:/ТЕЛЕГРАМ:» — только для непроизносимого; правило cron сохраняется."""
+
+    def test_the_hint_names_the_markers_the_parser_reads_and_the_cron_rule(self):
+        for word in ("ГОЛОС:", "ТЕЛЕГРАМ:", "по частям", "deliver"):
+            with self.subTest(word):
+                self.assertIn(word, p.PLATFORM_HINT)
+
+    def test_a_reply_written_as_the_hint_asks_splits_into_voice_and_details(self):
+        reply = p.voice_reply("ГОЛОС: Скрипт готов, код прислала в Телеграм.\nТЕЛЕГРАМ: ```print(1)```")
+        self.assertEqual((reply.parts, reply.telegram),
+                         (["Скрипт готов, код прислала в Телеграм."], "Алиса:\n```print(1)```"))
+
+
 if __name__ == "__main__":
     unittest.main()

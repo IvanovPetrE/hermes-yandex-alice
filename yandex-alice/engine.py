@@ -4,7 +4,9 @@
 ждёт итог не дольше бюджета, `RecallLast` — одно чтение истории Hermes (`recall`) под сроком. События Hermes (итог, начало и
 конец хода, старт шлюза, тик) вызывает адаптер. Состояние — атрибут экземпляра, не модуля (S5). Часы: `wall` — для `now`
 в событиях `step` (настенные), бюджет и срок чтения идут по часам цикла событий asyncio (монотонные).
-Telegram в этом срезе выключен (`Settings.telegram=False`): `step` сам не выдаёт его действий.
+Telegram (этап 5): действие `Telegram` и внеходовая отправка (`forward`) ставятся в очередь доставки (`telegram` —
+`delivery.Courier.enqueue`) после записи снимка; исход приходит в `on_delivery`. Без Telegram (`Settings.telegram=False`)
+`step` действий `Telegram` не выдаёт, `forward` ничего не делает.
 Хранилище (этап 4): начальное `state` — из `storage.Store.load()`, `save` — после каждого шага, изменившего состояние,
 до исполнения действий. Запись синхронная, в цикле событий (одна строка SQLite) — принятый предел. Загруженный вопрос в
 работе повторно не отправляется: `Ask` даёт только реплика владельца.
@@ -31,11 +33,13 @@ class Engine:
                  recall: Callable[[str], Awaitable[tuple[str, str | None]]], new_id: Callable[[], str],
                  wall: Callable[[], float] = time.time, budget: float = 3.5, recall_timeout: float = 1.5,
                  gate_timeout: float = 3.0, log: Callable[[str], None] | None = None, state: d.State | None = None,
-                 save: Callable[[d.State], None] | None = None):
+                 save: Callable[[d.State], None] | None = None,
+                 telegram: Callable[[str, str, tuple[str, ...]], None] | None = None):
         self.settings, self._ask, self._recall, self._new_id = settings, ask, recall, new_id
         self._wall, self._budget, self._recall_timeout, self._gate_timeout = wall, budget, recall_timeout, gate_timeout
         self._log = log or logger.warning
         self._save, self._save_failed = save, False
+        self._telegram = telegram
         self.state = state if state is not None else d.State(conversation=new_id())
         self._waiters: list[asyncio.Future[str]] = []
         self._tasks: set[asyncio.Task] = set()
@@ -116,6 +120,16 @@ class Engine:
         """Каждый `connect()` адаптера, и переподключение тоже (этап 4): ход агента мог потеряться (S5)."""
         self._apply(d.GatewayStarted(now=self._wall()))
 
+    def on_delivery(self, conversation: str, outcome: str, text: str, fallback: tuple[str, ...]) -> None:
+        """Исход отправки в Telegram (`delivery.Courier`): Д12 — failed → «Озвучить?», uncertain — предупредить раз."""
+        self._apply(d.Delivery(now=self._wall(), conversation=conversation, outcome=outcome, text=text,
+                               fallback=tuple(fallback)))
+
+    def forward(self, conversation: str, text: str) -> None:
+        """Отправка шлюза вне хода (S6) — в Telegram как есть (текст уже с подписью), без «Озвучить?»."""
+        if not self._closed and self.settings.telegram:
+            self._queue(conversation, text, ())
+
     def tick(self) -> None:
         """Сроки без реплики владельца: Д13 (незабранный ответ), Д9 («вопрос потерялся»)."""
         self._apply(d.Tick(now=self._wall()))
@@ -142,6 +156,8 @@ class Engine:
                 hold = True
             elif isinstance(act, d.Ask):
                 self._spawn(self._do_ask(act.conversation, act.text))
+            elif isinstance(act, d.Telegram):
+                self._queue(act.conversation, act.text, act.fallback)
             elif isinstance(act, d.RecallLast):
                 hold = True   # ответит Recalled; ретрай во время чтения ждёт то же чтение
                 if self._reading is None or self._reading.done():
@@ -149,6 +165,15 @@ class Engine:
                     self._tasks.add(self._reading)
                     self._reading.add_done_callback(self._tasks.discard)
         return say, hold
+
+    def _queue(self, conversation: str, text: str, fallback: tuple[str, ...]) -> None:
+        """В очередь доставки; её сбой беседу не ломает — в лог только класс ошибки (текст в лог не пишем)."""
+        if self._telegram is None:
+            return
+        try:
+            self._telegram(conversation, text, fallback)
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"telegram enqueue failed: {type(exc).__name__}")
 
     def _store(self, state: d.State) -> None:
         """Сбой хранилища беседу не ломает: она идёт в памяти (решение владельца, этап 4); в лог — класс ошибки,

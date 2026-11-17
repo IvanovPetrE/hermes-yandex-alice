@@ -347,5 +347,61 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any("секретный" in line or "вопрос" in line for line in h.lines))
 
 
+class TelegramTests(unittest.IsolatedAsyncioTestCase):
+    """Telegram настроен (этап 5, срез «а»): действия `Telegram` уходят в очередь доставки, исход — событие `Delivery`."""
+
+    def setUp(self) -> None:
+        self.queued: list[tuple[str, str, tuple[str, ...]]] = []
+        self.asks: list[tuple[str, str]] = []
+        ids = (f"c{i}" for i in itertools.count(1))
+
+        async def ask(conversation, text):
+            self.asks.append((conversation, text))
+
+        async def recall(conversation):
+            return "found", None
+
+        self.engine = en.Engine(d.Settings(), ask, recall, lambda: next(ids), wall=lambda: 1000.0, budget=0.2,
+                                log=lambda line: None,
+                                telegram=lambda conv, text, fallback: self.queued.append((conv, text, fallback)))
+
+    async def asked(self, text: str, final: str) -> str:
+        task = asyncio.create_task(self.engine.handle(rq(text, mid=str(len(self.asks) + 1))))
+        await settle()
+        conv = self.engine.state.conversation
+        self.engine.on_turn_start(conv, "m1", False)
+        self.engine.on_final(conv, final, False)
+        self.engine.on_turn_complete(conv, "m1", False)
+        return await task
+
+    async def test_details_after_the_telegram_marker_are_queued_with_the_label(self) -> None:
+        reply = await self.asked("вопрос", "ГОЛОС: Коротко.\nТЕЛЕГРАМ: Подробно, с кодом.")
+        self.assertEqual(reply, "Коротко.")
+        self.assertEqual(self.queued, [("c1", "Алиса:\nПодробно, с кодом.", ())])
+
+    async def test_a_failed_delivery_offers_to_voice_the_answer(self) -> None:
+        conv = self.engine.state.conversation
+        self.engine.on_delivery(conv, "failed", "Алиса:\nВесь ответ.", ("Весь ответ.",))
+        self.assertEqual(await self.engine.handle(rq("алло", mid="5")), "Не смогла отправить в Телеграм. Озвучить?")
+
+    async def test_an_uncertain_delivery_is_warned_once_before_the_next_reply(self) -> None:
+        conv = self.engine.state.conversation
+        self.engine.on_delivery(conv, "uncertain", "Алиса:\nПодробно.", ())
+        first = await self.engine.handle(rq("", mid="5", new=True))
+        second = await self.engine.handle(rq("", mid="6", new=True))
+        self.assertEqual(first, "Возможно, ответ не дошёл до Телеграма. Слушаю.")
+        self.assertFalse(second.startswith("Возможно"))
+
+    async def test_an_outside_send_is_forwarded_only_with_telegram(self) -> None:
+        async def unused(*args):
+            raise AssertionError("шлюз не нужен")
+
+        self.engine.forward("c9", "Алиса:\nНапоминание.")
+        off = en.Engine(SETTINGS, unused, unused, lambda: "x",
+                        telegram=lambda *a: self.fail("отправка без Telegram"))
+        off.forward("c9", "Алиса:\nНапоминание.")
+        self.assertEqual(self.queued, [("c9", "Алиса:\nНапоминание.", ())])
+
+
 if __name__ == "__main__":
     unittest.main()
