@@ -20,5 +20,5 @@ optional_env:
     description: "session.user.user_id владельца; пусто — режим привязки (все отказы)"
     password: false
   - name: ALICE_TELEGRAM_CHAT
-    description: "Чат Telegram для подробного ответа"
+    description: "Чат Telegram для подробностей, внеходовых ответов и cron из голоса; бот — TELEGRAM_BOT_TOKEN профиля"
     password: false
