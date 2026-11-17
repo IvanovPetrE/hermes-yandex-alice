@@ -133,6 +133,23 @@ class GatewayErrorTests(unittest.TestCase):
                 self.assertTrue(p.is_gateway_error(text))
                 self.assertEqual(p.spoken(text), ["Не получилось, попробуйте ещё раз."])
 
+    def test_interrupted_turn_notices_of_the_history_are_errors(self):
+        # S7: остановка шлюза посреди хода оставляет в истории служебную фразу семейства «Operation interrupted…»
+        for text in ("Operation interrupted: waiting for model response (0.6s elapsed).",
+                     "Operation interrupted: retrying API call after error (retry 1/3).",
+                     "Operation interrupted: retrying empty response from model (retry 1/2).",
+                     "Operation interrupted during retry (timeout, attempt 1/3).",
+                     "Operation interrupted.", "\nOperation interrupted: handling API error (X: y)."):
+            with self.subTest(text=text[:40]):
+                self.assertTrue(p.is_gateway_error(text))
+                self.assertEqual(p.spoken(text), ["Не получилось, попробуйте ещё раз."])
+
+    def test_interrupted_in_an_ordinary_sentence_is_not_an_error(self):
+        for text in ("Operation interrupted by the user, но данные сохранены.", "Список: Operation interrupted: пример",
+                     "operation interrupted: в нижнем регистре", "Operation interruptedly"):
+            with self.subTest(text=text[:40]):
+                self.assertFalse(p.is_gateway_error(text))
+
     def test_sentinel_inside_a_sentence_is_not_an_error(self):
         for text in ("(empty) — так записано", "Список (empty)", "(empty) а потом ответ"):
             with self.subTest(text=text):
