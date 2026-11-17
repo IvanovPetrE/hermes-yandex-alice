@@ -94,9 +94,16 @@ class Engine:
 
     # --- события Hermes ------------------------------------------------------------------------------------------
 
-    def on_final(self, conversation: str, text: str, internal: bool) -> None:
+    def on_final(self, conversation: str, text: str, internal: bool, card: str = "") -> None:
+        """`card` — метка хода из `approvals.Approvals.outcome`: `failed` (карточка не дошла), `off` (подтверждения
+        не настроены) или ""."""
         self._finals.add(conversation)
-        self._apply(d.Final(now=self._wall(), conversation=conversation, text=text, internal=internal))
+        self._apply(d.Final(now=self._wall(), conversation=conversation, text=text, internal=internal,
+                            card_failed=card == "failed", approvals_off=card == "off"))
+
+    def on_approval(self, conversation: str, waiting: bool) -> None:
+        """Ход беседы ждёт нажатия карточки в Telegram (или перестал ждать) — Д8 «Жду подтверждения…»."""
+        self._apply(d.Approval(now=self._wall(), conversation=conversation, waiting=waiting))
 
     def on_turn_start(self, conversation: str, mid: str | None, internal: bool) -> None:
         self._open[conversation] = (mid, asyncio.Event())

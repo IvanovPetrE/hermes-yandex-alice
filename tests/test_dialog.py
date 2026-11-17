@@ -914,5 +914,31 @@ class TableTests(unittest.TestCase):
                             self.assertFalse(st.question is not None and a.conversation == st.conversation)
 
 
+APPROVALS_OFF = "Эту команду нужно подтвердить в Телеграме, а подтверждения не настроены. Команда не выполнена."
+
+
+class ApprovalsOffTests(unittest.TestCase):
+    """Подтверждения недоступны заранее (этап 5, срез «б», решение владельца 2026-11-17): свой текст голосом, не «не
+    дошёл до Телеграма»; ответ агента — в Telegram, если он есть, иначе отбрасывается."""
+
+    def off_final(self, now=101.0):
+        return d.Final(now=now, conversation=CONV, text="Команда отклонена.", approvals_off=True)
+
+    def test_held_reply_says_approvals_are_off_and_sends_the_agent_text(self):
+        _, acts = d.step(asked(), self.off_final())
+        self.assertEqual(acts, (d.Telegram(CONV, "Алиса:\nКоманда отклонена."), d.Say(APPROVALS_OFF)))
+
+    def test_unattended_it_is_said_once_on_the_next_reply(self):
+        st, acts = d.step(later(), self.off_final(now=95.0))
+        self.assertEqual(acts, (d.Telegram(CONV, "Алиса:\nКоманда отклонена."),))
+        st, acts = d.step(st, utter("ну что?", turn="s1-5"))
+        self.assertEqual(acts, (d.Say(APPROVALS_OFF),))
+        self.assertIsNone(st.answer)
+
+    def test_without_telegram_only_the_voice_remains(self):
+        _, acts = d.step(asked(), self.off_final(), OFF)
+        self.assertEqual(acts, (d.Say(APPROVALS_OFF),))
+
+
 if __name__ == "__main__":
     unittest.main()

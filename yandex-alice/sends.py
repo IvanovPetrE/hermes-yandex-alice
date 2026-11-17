@@ -30,12 +30,13 @@ def strip_marker(text: str | None) -> str:
 
 
 def classify_send(*, open_turn: bool, turn_mid: str | None, reply_to: str | None, notify: object,
-                  interim: bool, text: str | None) -> str:
+                  interim: bool, text: str | None, approval_prompt: bool = False) -> str:
     """FINAL / INTERIM / RECOVERED / OUTSIDE для одного send().
 
     open_turn — у чата есть ход между on_processing_start и on_processing_complete; turn_mid — message_id этого хода
-    (None у внутреннего хода автопродолжения, его итог приходит с reply_to=None)."""
-    if interim:
+    (None у внутреннего хода автопродолжения, его итог приходит с reply_to=None); approval_prompt — текст `/approve`
+    Hermes (`is_approval_prompt`): служебный, как промежуточная отправка (S4, вывод 5)."""
+    if interim or approval_prompt:
         return INTERIM
     if open_turn and notify is True and reply_to == turn_mid:
         return FINAL

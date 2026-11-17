@@ -99,7 +99,8 @@ class Final:
     conversation: str
     text: str
     internal: bool = False
-    card_failed: bool = False
+    card_failed: bool = False     # карточка подтверждения хода не дошла до Telegram (S4)
+    approvals_off: bool = False   # подтверждения недоступны заранее: карточки не было (этап 5, срез «б»)
 
 
 @dataclass(frozen=True)
@@ -590,8 +591,10 @@ def _final(st: State, ev: Final, settings: Settings) -> tuple[State, tuple[objec
     if st.question is None:   # итог без вопроса в работе (run, фон, делегирование; C4) — голосом не звучит
         return st, (Telegram(st.conversation, p.whole_text(ev.text)),)
     whole = p.whole_text(ev.text)
-    if ev.card_failed:   # карточка подтверждения не дошла (S4): своя озвучка, текст агента — в Telegram
-        ans = Answer(parts=(p.REPLY_CARD_FAILED,), telegram=whole, whole=whole, ready_at=ev.now)
+    card = ev.card_failed or ev.approvals_off
+    if card:   # карточка не дошла (S4) или подтверждения не настроены: своя озвучка, текст агента — в Telegram
+        said = p.REPLY_APPROVALS_OFF if ev.approvals_off else p.REPLY_CARD_FAILED
+        ans = Answer(parts=(said,), telegram=whole, whole=whole, ready_at=ev.now)
     elif not settings.telegram:   # Telegram нет — весь ответ голосом, ничего не обещаем (П-OFF)
         ans = Answer(parts=tuple(p.spoken(ev.text)) or (p.REPLY_FAILED,), telegram="", whole=whole, ready_at=ev.now)
     else:
@@ -606,7 +609,7 @@ def _final(st: State, ev: Final, settings: Settings) -> tuple[State, tuple[objec
         return replace(st, prompt=IDLE if st.prompt == WAIT else st.prompt), sent
     if st.holding:
         return _voice(replace(st, holding=""), ans)
-    if ev.card_failed or p.is_gateway_error(ev.text):   # не «ответ готов»: сказать один раз, текст уже в Telegram (О9)
+    if card or p.is_gateway_error(ev.text):   # не «ответ готов»: сказать один раз, текст уже в Telegram (О9)
         return (replace(st, announce=ans.parts[0], prompt=IDLE if st.prompt == WAIT else st.prompt),
                 (Telegram(st.conversation, ans.telegram),))
     return replace(st, answer=ans), ()

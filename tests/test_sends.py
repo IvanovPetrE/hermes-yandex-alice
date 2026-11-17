@@ -124,5 +124,19 @@ class ForwardTests(unittest.TestCase):
         self.assertIsNone(self.fwd(False, s.classify_send(**outside, text=marked), marked))
 
 
+class ApprovalPromptTests(unittest.TestCase):
+    """Текст `/approve` Hermes (`is_approval_prompt`) не озвучивается, не становится незабранным ответом и не уходит в
+    Telegram (S4, вывод 5) — в ходе и вне его, с любыми `reply_to`/`notify`."""
+
+    def test_approval_prompt_text_is_never_final_or_forwarded(self):
+        for open_turn in (True, False):
+            for notify in (True, None):
+                with self.subTest(open_turn=open_turn, notify=notify):
+                    k = kind(open_turn=open_turn, notify=notify, approval_prompt=True,
+                             text="♻️ Approve:\n\n/approve to run")
+                    self.assertEqual(k, s.INTERIM)
+                    self.assertIsNone(s.forward_text(open_turn=open_turn, kind=k, text="/approve"))
+
+
 if __name__ == "__main__":
     unittest.main()

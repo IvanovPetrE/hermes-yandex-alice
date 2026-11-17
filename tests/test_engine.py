@@ -403,5 +403,33 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.queued, [("c9", "Алиса:\nНапоминание.", ())])
 
 
+class ApprovalTests(unittest.IsolatedAsyncioTestCase):
+    """Подтверждения (этап 5, срез «б»): флаг «ждёт» и метка хода приходят от адаптера (`approvals.Approvals`)."""
+
+    async def test_a_live_card_is_said_while_waiting(self) -> None:
+        h = Harness(budget=0.05)
+        self.assertEqual(await h.engine.handle(rq("удали каталог", mid="1")), p.REPLY_ACCEPTED)
+        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_approval(h.conv, True)
+        self.assertEqual(await h.engine.handle(rq("да", mid="2", nlu={"intents": {"YANDEX.CONFIRM": {}}})),
+                         "Жду подтверждения в Телеграме. Подождёте?")
+        h.engine.on_approval(h.conv, False)
+        self.assertEqual(await h.engine.handle(rq("да", mid="3", nlu={"intents": {"YANDEX.CONFIRM": {}}})),
+                         "Ещё не готово. Подождёте?")
+
+    async def test_the_turn_mark_picks_the_voiced_text(self) -> None:
+        cases = {"failed": "Запрос на подтверждение не дошёл до Телеграма, команда не выполнена.",
+                 "off": "Эту команду нужно подтвердить в Телеграме, а подтверждения не настроены. Команда не выполнена.",
+                 "": "Команда отклонена."}
+        for card, said in cases.items():
+            with self.subTest(card=card):
+                h = Harness(budget=1.0)
+                task = asyncio.create_task(h.engine.handle(rq("удали каталог")))
+                await settle()
+                h.engine.on_turn_start(h.conv, "m1", False)
+                h.engine.on_final(h.conv, "Команда отклонена.", False, card=card)
+                self.assertEqual(await task, said)
+
+
 if __name__ == "__main__":
     unittest.main()

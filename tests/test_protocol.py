@@ -271,6 +271,14 @@ class TextTests(unittest.TestCase):
                 self.assertNotRegex(text, r"[*_`#\[\]<>]|https?://")
 
 
+class ApprovalTextTests(unittest.TestCase):
+    """Подтверждения (этап 5, срез «б») — дословно из решения владельца 2026-11-17."""
+
+    def test_disabled_approvals_text_is_verbatim(self):
+        self.assertEqual(getattr(p, "REPLY_APPROVALS_OFF", None),
+                         "Эту команду нужно подтвердить в Телеграме, а подтверждения не настроены. Команда не выполнена.")
+
+
 class DialogTextTests(unittest.TestCase):
     """Тексты среза «б» — дословно из решений владельца 2026-11-17 (docs/PLAN.md, этап 2)."""
     VERBATIM = {
