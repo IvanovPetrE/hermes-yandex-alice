@@ -967,8 +967,10 @@ SECURITY и публикацию в Marketplace. Вернуться, если п
 
 ## Что переносится из старого bridge
 
-Стартовая точка, будет переделываться под диалог. Перенесено в `yandex-alice/protocol.py` без изменения поведения: тексты ответов, `alice_reply`, проверка тела,
-`speakable`/`split_answer`, интенты и `classify_reply`, `is_control_phrase`, `RateLimiter`.
+Перенесено в `yandex-alice/protocol.py` без изменения поведения: проверка тела (`parse_request`), `is_owner`,
+`is_rejected_command`, `RateLimiter`, очистка голоса от разметки. Переделано под диалог (этап 2, срез «а», 2026-11-17):
+`alice_reply` (сессия открыта), `split_answer` (без усечения), интенты (`intents`, `hya.*`), тексты; добавлены
+`voice_parts`, `voice_reply`, `is_gateway_error`. Удалены `speakable`, `classify_reply`, `is_control_phrase` (М5).
 Не нужны: `ask_agent` (Chat Completions + ключи профилей), `deliver` + `sign_v2` (webhook `alice-reply`),
 `_DeadlineSocket`/`_post`, свой `ThreadingHTTPServer`. `Jobs`/`Turn` заменяются кэшем по образцу LINE.
 

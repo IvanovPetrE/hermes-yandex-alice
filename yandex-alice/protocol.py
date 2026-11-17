@@ -1,11 +1,9 @@
-"""Протокол Яндекс Диалогов и разбор ответа агента — без зависимостей от Hermes.
+"""Протокол Яндекс Диалогов, интенты и разбор итога хода агента — без зависимостей от Hermes.
 
-Перенесено из old-bridge (bridge/alice_bridge.py) без изменения поведения;
-выброшены HTTP-клиент, подпись V2 и обрезка под тело webhook — в плагине их нет.
+Сессия Алисы после ответа не закрывается: беседа продолжается (docs/RECON.md, «Модель беседы»).
+Команды — только интенты (М5). Ответ агента не сжимается: голос режется на реплики по предложениям
+(«Продолжить?» и позиция чтения — dialog.py), в Telegram — только по запросу (Р3) и ответ со ссылкой.
 Модуль импортируется и тестируется без checkout Hermes.
-
-Это стартовая точка: логика будет переделана под диалог (сессия Алисы не закрывается после
-ответа) — см. docs/RECON.md, «Модель диалога».
 """
 from __future__ import annotations
 
@@ -15,26 +13,38 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, NamedTuple
 
-REPLY_HELLO = "Скажите задачу для секретаря."
+# Дословно из «Модели беседы» (М1–М6) и решений по S1/S4 — docs/RECON.md.
+REPLY_ACCEPTED = "Вопрос принят. Спросите ответ позже или готовы подождать?"
+REPLY_LATER = "Хорошо, спросите ответ позже."
+REPLY_NOT_READY = "Ещё не готово. Подождёте?"
+REPLY_NEW_OR_OLD = "Начать новый диалог или продолжить прошлый?"
+REPLY_READY = "Ответ на прошлый вопрос готов. Скинуть?"
+REPLY_NO_ANSWERS = "Ответов нет, задайте вопрос."
+REPLY_FAILED = "Не получилось, попробуйте ещё раз."
+REPLY_LOST = "Вопрос потерялся, повторите."
+REPLY_CARD_FAILED = "Запрос на подтверждение не дошёл до Телеграма, команда не выполнена."
+REPLY_CONTINUE = "Продолжить?"
+# Остальные — в стиле bridge.
+REPLY_HELLO = "Слушаю."
+REPLY_WAIT_HELP = "Я готовлю ответ. Можно подождать, спросить ответ позже или сказать „пришли в Телеграм“. Подождёте?"
+REPLY_IN_TELEGRAM = "Ответ пришлю в Телеграм."   # исход доставки ещё неизвестен — будущее время
+REPLY_ERROR = "Сейчас не могу ответить, повторите позже."
 REPLY_NOT_OWNER = "Этот навык работает только для владельца."
 REPLY_UNBOUND = "Навык ещё не привязан к владельцу."
 REPLY_REJECTED = "Такую команду я не передам."
 REPLY_RATE = "Слишком много команд подряд, подождите минуту."
-REPLY_THINKING = "Думаю... Готовы подождать?"
-REPLY_WAIT_HELP = "Я готовлю ответ. Можно подождать или сказать „пришли в Телеграм“. Готовы подождать?"
-REPLY_TELEGRAM = "Пришлю результат в Телеграм."
-REPLY_ERROR = "Секретарь сейчас недоступен, повторите позже."
-REPLY_LOST = "Я потеряла эту задачу, повторите команду."
-VOICE_TAIL = "Ответ — в Телеграме."
+TELEGRAM_LABEL = "Алиса:"   # подпись всего, что плагин шлёт в Telegram
 
 MAX_BODY = 16 * 1024   # байт тела запроса от Яндекса
 MAX_TEXT = 1000        # символов в одной команде
 MAX_REPLY = 1024       # лимит response.text Алисы
+VOICE_LIMIT = 900      # символов голоса в одной реплике; запас под «Продолжить?»
 
 
-def alice_reply(text: str, end_session: bool = True) -> bytes:
+def alice_reply(text: str, end_session: bool = False) -> bytes:
+    """Беседа владельца не закрывается; end_session=True — только отказ чужому."""
     return json.dumps({"version": "1.0", "response": {"text": text[:MAX_REPLY], "end_session": end_session}},
                       ensure_ascii=False).encode()
 
@@ -120,66 +130,132 @@ def _clean_voice(text: str) -> str:
     return " ".join(text.split())
 
 
-def speakable(text: str, limit: int) -> str:
-    text = _clean_voice(text)
-    if len(text) <= limit:
-        return text
-    head = text[:limit]
-    sentences = list(re.finditer(r"[.!?…](?=\s|$)", head))
-    if sentences:
-        return head[:sentences[-1].end()].strip()
-    return head.rsplit(" ", 1)[0].strip() if " " in head else head
+def voice_parts(text: str, limit: int = VOICE_LIMIT) -> list[str]:
+    """Очищенный голос — на реплики ≤ limit: по предложениям жадно; предложение длиннее limit — по словам,
+    слово длиннее limit — жёстко. Текст не теряется: склейка частей пробелом даёт исходный (кроме жёстких разрезов)."""
+    pieces: list[str] = []
+    for sentence in re.split(r"(?<=[.!?…])\s+", text.strip()):
+        if len(sentence) <= limit:
+            pieces.append(sentence)
+            continue
+        for word in sentence.split():
+            pieces.extend(word[i:i + limit] for i in range(0, len(word), limit))
+    parts: list[str] = []
+    current = ""
+    for piece in pieces:
+        if not piece:
+            continue
+        joined = f"{current} {piece}" if current else piece
+        if len(joined) <= limit:
+            current = joined
+        else:
+            parts.append(current)
+            current = piece
+    if current:
+        parts.append(current)
+    return parts
 
 
-def split_answer(raw: str, voice_max: int = 600) -> tuple[str, str, bool]:
-    """(голос, телеграм, формат_соблюдён) из ответа в формате «ГОЛОС: … ТЕЛЕГРАМ: …»."""
-    markers = list(re.finditer(r"(?im)^\s*[#*]*\s*(ГОЛОС|ТЕЛЕГРАММ?)\s*[*]*\s*:\s*[*]*[ \t]*", raw))
-    # Формат — первый ГОЛОС и первый ТЕЛЕГРАМ после него; такие же строки в теле ответа не ломают разбор.
-    ok, tail = False, None
-    if markers and markers[0].group(1).upper() == "ГОЛОС":
+class Answer(NamedTuple):
+    voice: str       # очищенный текст для голоса, без усечения
+    telegram: str    # "" — в Telegram ничего
+    marked: bool     # агент соблюл формат «ГОЛОС: … ТЕЛЕГРАМ: …» (для диагностики)
+
+
+_MARKER = re.compile(r"(?im)^\s*[#*]*\s*(ГОЛОС|ТЕЛЕГРАММ?)\s*[*]*\s*:\s*[*]*[ \t]*")
+
+
+def split_answer(raw: str) -> Answer:
+    """Голос и Telegram из ответа «ГОЛОС: … ТЕЛЕГРАМ: …»; голос не усекается (длинный читается по частям).
+
+    Формат — первый ГОЛОС и первый ТЕЛЕГРАМ после него; такие же строки в теле ответа не ломают разбор,
+    текст до ГОЛОС остаётся в голосе. Без маркеров — всё голосом. Один маркер (только ГОЛОС или ТЕЛЕГРАМ первым)
+    считается форматом, только если написан заглавными, как в platform_hint: «Телеграм: @ivan» в списке контактов —
+    обычный текст. ТЕЛЕГРАМ первым — весь текст в Telegram (агент явно попросил)."""
+    markers = list(_MARKER.finditer(raw))
+    if not markers:
+        return Answer(_clean_voice(raw), "", False)
+    first = markers[0]
+    head = raw[:first.start()]
+    if first.group(1).upper() == "ГОЛОС":
         tail = next((m for m in markers[1:] if m.group(1).upper().startswith("ТЕЛЕГРАМ")), None)
-        ok = tail is not None
-    voice, telegram = "", raw
-    if ok:
-        voice = _clean_voice(raw[markers[0].end():tail.start()])
-        telegram = raw[tail.end():].strip()
-        ok = bool(voice and telegram)
-    if not ok:
-        voice = speakable(raw, min(300, voice_max - len(VOICE_TAIL) - 1)) + " " + VOICE_TAIL
-        telegram = raw
-    elif len(voice) > voice_max:
-        voice = speakable(voice, voice_max - len(VOICE_TAIL) - 1) + " " + VOICE_TAIL
-    return voice.strip(), telegram, ok
+        if tail is not None:
+            voice, telegram = _clean_voice(head + " " + raw[first.end():tail.start()]), raw[tail.end():].strip()
+            return Answer(voice, telegram, bool(voice and telegram))
+        if first.group(1).isupper():
+            return Answer(_clean_voice(head + " " + raw[first.end():]), "", False)
+    elif first.group(1).isupper():
+        return Answer("", "\n".join(s for s in (head.strip(), raw[first.end():].strip()) if s), False)
+    return Answer(_clean_voice(raw), "", False)
 
 
-def _words(text: str) -> list[str]:
-    return re.findall(r"[a-zа-я0-9]+", text.lower().replace("ё", "е"))
+def _strip_markers(raw: str) -> str:
+    """Текст для Telegram без маркеров формата (заглавных); строки тела вроде «Телеграм: @ivan» остаются."""
+    return _MARKER.sub(lambda m: "" if m.group(1).isupper() else m.group(0), raw).strip()
 
 
-_STRONG_REFUSAL = {"потом", "позже", "хватит", "стоп", "отмена", "некогда"}
+# Итог-ошибка шлюза Hermes (v0.23.1) приходит обычным итогом хода; отличить её можно только по тексту.
+# Форма 1 — префикс locales/*.yaml explainer.no_reply_prefix перед любым объяснением выхода без ответа
+# (в т. ч. explainer.empty_response); язык — display.language, по умолчанию en.
+# Форма 2 — agent/turn_failure_copy.py exhausted_copy (только en). Закрепляется тестом совместимости (этап 6).
+_NO_REPLY_PREFIXES = ("⚠ No reply: ", "⚠ Нет ответа: ")   # сравнение — без U+FE0F
+_EXHAUSTED_MARK = "add a backup provider with `hermes fallback add`.\n\nProvider said: "
 
 
-def _telegram_word(word: str) -> bool:
-    return word in {"telegram", "пришли"} or word.startswith(("телеграм", "присла", "присыл", "текст"))
+def is_gateway_error(text: str) -> bool:
+    """Известная форма текста ошибки шлюза (пустой ответ модели, сбой провайдера), а не ответ агента."""
+    text = text.lstrip().replace("️", "")
+    if text.startswith(_NO_REPLY_PREFIXES):
+        return True
+    return _EXHAUSTED_MARK in text and " — " in text.split("\n", 1)[0]
 
 
-def _negatable_word(word: str) -> bool:
-    """Слова, отрицание которых («не буду», «не сейчас») — отказ ждать."""
-    return (word in {"буду", "жду", "ждать", "надо", "нужно", "хочу", "могу", "давай", "сейчас", "вслух", "готов", "готова"}
-            or word.startswith(("подожд", "голос", "озвуч")))
+class Reply(NamedTuple):
+    parts: list[str]   # реплики голосом по порядку; больше одной — чтение по частям («Продолжить?» — dialog.py)
+    telegram: str      # готовый текст для Telegram с подписью; "" — не отправлять
 
 
-def _consent_word(word: str) -> bool:
-    return (word in {"да", "жду", "ждать", "давай", "ладно", "хорошо", "буду", "конечно", "ок", "угу", "ага", "вслух",
-                     "скажи", "говори", "готов", "готова"} or word.startswith(("подожд", "голос", "озвуч")))
+def telegram_text(text: str) -> str:
+    return f"{TELEGRAM_LABEL}\n{text}"
 
 
-REPLY_INTENTS = ("bridge.wait", "bridge.telegram", "bridge.no_wait", "YANDEX.CONFIRM",
-                 "YANDEX.REJECT", "YANDEX.HELP", "YANDEX.REPEAT")
+# Ссылка (со схемой, www., домен с путём вроде t.me/…) или адрес почты — голосом не прочесть (П5).
+_LINK = re.compile(r"https?://|www\.|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}/\S|[\w.+-]+@[\w-]+\.[\w.]+", re.I)
 
 
-def reply_intents(nlu: object) -> tuple[str, tuple[str, ...]]:
-    """Для решений и диагностики — только известные имена; слоты и произвольный ввод не сохраняются."""
+def voice_reply(raw: str) -> Reply:
+    """Итог хода → что сказать голосом и что отправить в Telegram.
+
+    Telegram — только по явному «ТЕЛЕГРАМ:» агента, для ошибки шлюза и для ответа со ссылкой (голосом ссылку
+    не прочесть — решение владельца 2026-11-17); длинный ответ без ссылок читается по частям и не дублируется."""
+    if is_gateway_error(raw):
+        return Reply([REPLY_FAILED], telegram_text(raw))
+    voice, telegram, _ = split_answer(raw)
+    if not telegram and _LINK.search(raw):
+        telegram = _strip_markers(raw)
+    if voice:
+        return Reply(voice_parts(voice), telegram_text(telegram) if telegram else "")
+    if telegram:
+        return Reply([REPLY_IN_TELEGRAM], telegram_text(telegram))
+    return Reply([REPLY_FAILED], "")
+
+
+INTENT_ANSWER_GET = "hya.answer.get"            # «скинь ответ»
+INTENT_DIALOG_NEW = "hya.dialog.new"            # «новый диалог» (грамматика без `...`, М5)
+INTENT_DIALOG_CONTINUE = "hya.dialog.continue"  # «прошлый»
+INTENT_WAIT = "hya.wait"                        # «подожду»
+INTENT_LATER = "hya.later"                      # «позже»
+INTENT_TELEGRAM = "hya.telegram"                # «пришли в Телеграм»
+INTENT_NEXT = "hya.next"                        # «дальше» — следующая часть длинного ответа
+YANDEX_CONFIRM, YANDEX_REJECT = "YANDEX.CONFIRM", "YANDEX.REJECT"
+YANDEX_HELP, YANDEX_REPEAT = "YANDEX.HELP", "YANDEX.REPEAT"
+INTENTS = (INTENT_ANSWER_GET, INTENT_DIALOG_NEW, INTENT_DIALOG_CONTINUE, INTENT_WAIT, INTENT_LATER,
+           INTENT_TELEGRAM, INTENT_NEXT, YANDEX_CONFIRM, YANDEX_REJECT, YANDEX_HELP, YANDEX_REPEAT)
+
+
+def intents(nlu: object) -> tuple[str, tuple[str, ...]]:
+    """(статус nlu, известные интенты) — только имена из INTENTS; слоты и произвольный ввод не сохраняются.
+    Смысл и приоритет зависят от состояния беседы и решаются в dialog.py."""
     if nlu is None:
         return "absent", ()
     if not isinstance(nlu, dict):
@@ -188,34 +264,4 @@ def reply_intents(nlu: object) -> tuple[str, tuple[str, ...]]:
         return "absent", ()
     if not isinstance(nlu["intents"], dict):
         return "invalid", ()
-    return "valid", tuple(name for name in REPLY_INTENTS if isinstance(nlu["intents"].get(name), dict))
-
-
-def _classify_intents(intents: tuple[str, ...]) -> str:
-    if "bridge.wait" in intents:
-        return "wait"
-    if "bridge.telegram" in intents or "bridge.no_wait" in intents:
-        return "telegram"
-    # HELP — согласие ждать, но при неготовом результате нужна подсказка пользователю.
-    if "YANDEX.HELP" in intents:
-        return "help"
-    if "YANDEX.CONFIRM" in intents or "YANDEX.REPEAT" in intents:
-        return "wait"
-    if "YANDEX.REJECT" in intents:
-        return "telegram"
-    return "wait"
-
-
-def classify_reply(nlu: object, *, intents: Optional[tuple[str, ...]] = None) -> str:
-    """Только для открытого вопроса: свои интенты > встроенные; без интентов ждём."""
-    return _classify_intents(reply_intents(nlu)[1] if intents is None else intents)
-
-
-def _control_word(word: str) -> bool:
-    return (_telegram_word(word) or _negatable_word(word) or _consent_word(word)
-            or word in _STRONG_REFUSAL or word in {"в", "не", "нет"})
-
-
-def is_control_phrase(text: str) -> bool:
-    words = _words(text)
-    return bool(words) and all(_control_word(word) for word in words)
+    return "valid", tuple(name for name in INTENTS if isinstance(nlu["intents"].get(name), dict))
