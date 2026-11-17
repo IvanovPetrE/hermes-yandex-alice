@@ -146,6 +146,84 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(h.engine.state.answer)   # Telegram выключен: ответ удалён, отправки нет (принято владельцем)
 
 
+def unclaimed(conversation="saved-1") -> d.State:
+    """Состояние из хранилища: незабранный ответ прошлой беседы."""
+    return d.State(conversation=conversation, last_owner_at=900.0,
+                   answer=d.Answer(parts=("Ответ.",), telegram="", whole="Алиса:\nОтвет.", ready_at=950.0))
+
+
+class StoredStateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_loaded_state_is_continued(self) -> None:
+        h = Harness(state=unclaimed())
+        self.assertEqual(h.conv, "saved-1")
+        self.assertEqual(await h.engine.handle(rq("", new=True)), p.REPLY_READY)
+
+    async def test_every_change_is_saved_and_an_idle_tick_is_not(self) -> None:
+        saved = []
+        h = Harness(save=saved.append)
+        h.engine.tick()
+        self.assertEqual(saved, [])
+        await h.engine.handle(rq("вопрос"))
+        self.assertEqual(saved[-1], h.engine.state)
+        self.assertIsNotNone(saved[-1].question)
+
+    async def test_failing_storage_does_not_break_the_dialog_and_is_logged_once(self) -> None:
+        def broken(state):
+            raise OSError("disk full: Секретный ответ")
+
+        h = Harness(save=broken)
+        task = asyncio.create_task(h.engine.handle(rq("вопрос")))
+        await settle()
+        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_final(h.conv, "Ответ", False)
+        self.assertEqual(await task, "Ответ")
+        self.assertEqual(h.lines, ["state save failed: OSError"])
+
+    async def test_question_in_work_is_not_asked_again_after_a_restart(self) -> None:
+        h = Harness(state=d.State(conversation="saved-1", question=d.Question(asked_at=990.0), last_owner_at=990.0))
+        h.engine.on_gateway_started()
+        await settle()
+        self.assertEqual(h.asks, [])
+        self.assertIsNotNone(h.engine.state.question)
+
+    async def test_answer_resent_after_a_restart_waits_for_the_owner(self) -> None:
+        saved = []
+        h = Harness(state=d.State(conversation="saved-1", question=d.Question(asked_at=990.0), last_owner_at=990.0),
+                    save=saved.append)
+        h.engine.on_gateway_started()
+        h.engine.on_turn_start("saved-1", None, True)       # Hermes дозапустил ход (S5)
+        h.engine.on_final("saved-1", "Досланный ответ.", True)
+        h.engine.on_turn_complete("saved-1", None, True)
+        self.assertEqual(saved[-1].answer.parts, ("Досланный ответ.",))
+        self.assertEqual(await h.engine.handle(rq("", new=True)), p.REPLY_READY)
+
+    async def test_after_reconnect_a_late_final_is_kept_not_voiced_into_nothing(self) -> None:
+        stale = d.State(conversation="saved-1", question=d.Question(asked_at=990.0), holding="wait",
+                        last_owner_at=990.0)
+        h = Harness(state=stale)
+        h.engine.on_gateway_started()   # адаптер шлёт его на каждом connect() (решение владельца, этап 4)
+        h.engine.on_final("saved-1", "Поздний ответ.", False)
+        self.assertEqual(h.engine.state.answer.parts, ("Поздний ответ.",))
+
+    async def test_after_reconnect_a_question_that_never_reached_hermes_is_reported_lost(self) -> None:
+        h = Harness(state=d.State(conversation="saved-1", question=d.Question(asked_at=990.0), holding="ask",
+                                  last_owner_at=990.0))
+        h.engine.on_gateway_started()
+        h.clock = 1000.0 + SETTINGS.lost_after
+        h.engine.tick()
+        self.assertEqual(await h.engine.handle(rq("алло", mid="9")), p.REPLY_LOST)
+
+    async def test_closed_engine_saves_nothing(self) -> None:
+        saved = []
+        h = Harness(budget=0.05, save=saved.append)
+        await h.engine.handle(rq("вопрос"))
+        await h.engine.close()
+        count = len(saved)
+        h.engine.on_final(h.conv, "Поздний ответ", False)
+        h.engine.on_gateway_started()
+        self.assertEqual(len(saved), count)
+
+
 class RobustnessTests(unittest.IsolatedAsyncioTestCase):
     async def test_events_after_close_change_nothing_and_start_no_tasks(self) -> None:
         h = Harness(budget=0.05)

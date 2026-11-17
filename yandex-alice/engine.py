@@ -5,6 +5,9 @@
 конец хода, старт шлюза, тик) вызывает адаптер. Состояние — атрибут экземпляра, не модуля (S5). Часы: `wall` — для `now`
 в событиях `step` (настенные), бюджет и срок чтения идут по часам цикла событий asyncio (монотонные).
 Telegram в этом срезе выключен (`Settings.telegram=False`): `step` сам не выдаёт его действий.
+Хранилище (этап 4): начальное `state` — из `storage.Store.load()`, `save` — после каждого шага, изменившего состояние,
+до исполнения действий. Запись синхронная, в цикле событий (одна строка SQLite) — принятый предел. Загруженный вопрос в
+работе повторно не отправляется: `Ask` даёт только реплика владельца.
 """
 from __future__ import annotations
 
@@ -27,11 +30,13 @@ class Engine:
     def __init__(self, settings: d.Settings, ask: Callable[[str, str], Awaitable[None]],
                  recall: Callable[[str], Awaitable[tuple[str, str | None]]], new_id: Callable[[], str],
                  wall: Callable[[], float] = time.time, budget: float = 3.5, recall_timeout: float = 1.5,
-                 gate_timeout: float = 3.0, log: Callable[[str], None] | None = None):
+                 gate_timeout: float = 3.0, log: Callable[[str], None] | None = None, state: d.State | None = None,
+                 save: Callable[[d.State], None] | None = None):
         self.settings, self._ask, self._recall, self._new_id = settings, ask, recall, new_id
         self._wall, self._budget, self._recall_timeout, self._gate_timeout = wall, budget, recall_timeout, gate_timeout
         self._log = log or logger.warning
-        self.state = d.State(conversation=new_id())
+        self._save, self._save_failed = save, False
+        self.state = state if state is not None else d.State(conversation=new_id())
         self._waiters: list[asyncio.Future[str]] = []
         self._tasks: set[asyncio.Task] = set()
         self._open: dict[str, tuple[str | None, asyncio.Event]] = {}   # беседа -> (message_id хода, сигнал «ход закрыт»)
@@ -108,7 +113,7 @@ class Engine:
             self._apply(d.TurnClosed(now=self._wall(), conversation=conversation))
 
     def on_gateway_started(self) -> None:
-        """Первый `connect()` процесса шлюза (не переподключение): ход агента мог потеряться (S5)."""
+        """Каждый `connect()` адаптера, и переподключение тоже (этап 4): ход агента мог потеряться (S5)."""
         self._apply(d.GatewayStarted(now=self._wall()))
 
     def tick(self) -> None:
@@ -122,7 +127,10 @@ class Engine:
         После `close()` события игнорируются: поздний итог или тик не должен породить задач у отключённого адаптера."""
         if self._closed:
             return None, False
-        self.state, acts = d.step(self.state, event, self.settings)
+        before = self.state
+        self.state, acts = d.step(before, event, self.settings)
+        if self._save is not None and self.state != before:   # до действий: Ask уходит, когда вопрос уже записан
+            self._store(self.state)
         say, hold = None, False
         for act in acts:
             if isinstance(act, d.Say):
@@ -141,6 +149,16 @@ class Engine:
                     self._tasks.add(self._reading)
                     self._reading.add_done_callback(self._tasks.discard)
         return say, hold
+
+    def _store(self, state: d.State) -> None:
+        """Сбой хранилища беседу не ломает: она идёт в памяти (решение владельца, этап 4); в лог — класс ошибки,
+        один раз за экземпляр (текст исключения может нести текст ответа)."""
+        try:
+            self._save(state)
+        except Exception as exc:  # noqa: BLE001
+            if not self._save_failed:
+                self._save_failed = True
+                self._log(f"state save failed: {type(exc).__name__}")
 
     def _spawn(self, coro: Awaitable[None]) -> None:
         task = asyncio.ensure_future(coro)

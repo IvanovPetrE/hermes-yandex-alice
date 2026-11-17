@@ -5,8 +5,8 @@
 чтение истории (`SessionDB`) и хук cron. Импорты из Hermes — только из `public-api.md`; `os.environ` не читается.
 
 Модель по пробам: S5 (жизненный цикл, занятый порт, события хода), S6 (хук `pre_tool_call`, `validate_config`), S7 (чтение
-истории в рабочем потоке). Telegram в этом срезе выключен (`Settings.telegram=False`), состояние беседы — в памяти
-экземпляра (теряется при переподключении и перезапуске шлюза — решено владельцем, закрывает этап 4).
+истории в рабочем потоке). Telegram в этом срезе выключен (`Settings.telegram=False`). Состояние беседы — в SQLite
+плагина (`storage`, этап 4) и переживает переподключение и перезапуск шлюза; хранилище недоступно — беседа в памяти.
 В логах нет секретного пути, тела запроса и текста реплик; единственный ID — user_id в режиме привязки.
 """
 import asyncio
@@ -22,9 +22,10 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session_context import get_session_env
 
-from . import cron_guard, dialog, engine, entry, history, protocol, sends
+from . import cron_guard, dialog, engine, entry, history, protocol, sends, storage
 
 PLATFORM = "yandex_alice"
+PLUGIN_NAME = "yandex-alice"   # каталог данных плагина: plugin-data/<имя>/
 TICK_SECONDS = 60.0     # период проверки сроков (Д13, Д9)
 READ_TIMEOUT = 5.0      # с на чтение тела запроса: защита от медленной отправки
 HINT = ("Канал — голос Яндекс Алисы: ответ прозвучит вслух. Отвечай коротко и разговорно, без разметки, списков и "
@@ -58,7 +59,7 @@ class AliceAdapter(BasePlatformAdapter):
         self._extra = dict(getattr(config, "extra", None) or {})
         self._cfg = None
         self._owner_id = ""
-        self._engine = None
+        self._engine = self._store = None
         self._runner = self._site = self._tick = None
         self._open = {}                 # chat_id -> (message_id открытого хода, внутренний ли он)
         self._sends = 0
@@ -81,24 +82,32 @@ class AliceAdapter(BasePlatformAdapter):
             return self._fail("config_invalid", "platforms.yandex_alice.extra.port is not a valid port", retryable=False)
         self._owner_id = _secret("ALICE_OWNER_USER_ID")
         self._cfg = entry.EntryConfig(secret=secret, skill_id=skill, owner_user_id=self._owner_id)
+        self._close_store()   # повторный connect() без disconnect(): прежнее соединение не должно остаться открытым
+        self._store, loaded = await asyncio.to_thread(self._open_store)
         # Движок — до listener'а: запрос, пришедший сразу после bind, не должен упереться в None.
         self._engine = engine.Engine(dialog.Settings(telegram=False), self._ask, self._recall,
-                                     new_id=lambda: "alice-" + uuid.uuid4().hex[:12])
+                                     new_id=lambda: "alice-" + uuid.uuid4().hex[:12], state=loaded,
+                                     save=self._store.save if self._store is not None else None)
 
         from aiohttp import web
 
-        app = web.Application()
-        app.router.add_post("/{tail:.*}", self._http)
-        runner = web.AppRunner(app, access_log=None)
-        await runner.setup()
-        site = web.TCPSite(runner, "127.0.0.1", port)   # только loopback
+        runner = None
         try:
+            app = web.Application()
+            app.router.add_post("/{tail:.*}", self._http)
+            runner = web.AppRunner(app, access_log=None)
+            await runner.setup()
+            site = web.TCPSite(runner, "127.0.0.1", port)   # только loopback
             await site.start()
-        except OSError:
-            with contextlib.suppress(Exception):
-                await runner.cleanup()
+        except BaseException as exc:   # любой сбой запуска (и отмена) не оставляет движок и соединение с базой
+            if runner is not None:
+                with contextlib.suppress(Exception):
+                    await runner.cleanup()
             self._engine = None
-            return self._fail("bind_failed", "could not bind the loopback port", retryable=True)
+            self._close_store()
+            if isinstance(exc, OSError):
+                return self._fail("bind_failed", "could not bind the loopback port", retryable=True)
+            raise
         self._runner, self._site = runner, site
 
         try:   # часть цепочки истории, не зависящая от беседы: профиль и путь к state.db — один раз
@@ -106,8 +115,9 @@ class AliceAdapter(BasePlatformAdapter):
         except Exception as exc:  # noqa: BLE001 - тогда каждое чтение определит путь само
             logger.warning("history path not resolved: %s", type(exc).__name__)
             self._db_path = None
-        if not is_reconnect:   # первый connect() процесса шлюза: ход агента мог потеряться (S5, L4)
-            self._engine.on_gateway_started()
+        # Каждый connect(), и переподключение тоже: состояние из базы могло застать удержание или ход, итог которого
+        # этот экземпляр не узнает, — удержание сбрасывается, вопрос в работе идёт по Д9 (решение владельца, этап 4).
+        self._engine.on_gateway_started()
         self._tick = asyncio.ensure_future(self._tick_loop())
         self._running = True
         self._mark_connected()
@@ -125,10 +135,36 @@ class AliceAdapter(BasePlatformAdapter):
         if self._engine is not None:   # ожидающие запросы получают ответ до runner.cleanup, иначе он ждёт обработчики
             engine_, self._engine = self._engine, None
             await engine_.close()
+        self._close_store()   # после close(): закрытый движок уже не пишет
         if self._runner is not None:
             with contextlib.suppress(Exception):
                 await self._runner.cleanup()
         self._tick = self._site = self._runner = None
+
+    @staticmethod
+    def _open_store():
+        """`(хранилище, загруженное состояние)` в рабочем потоке. `plugin_db` кладёт базу в `<дом Hermes>/plugin-data/`
+        (дом — по области `connect()`). Любой сбой — `(None, None)`: беседа идёт в памяти (решение владельца, этап 4)."""
+        conn = None
+        try:
+            from plugins.plugin_storage import plugin_db
+
+            conn = plugin_db(PLUGIN_NAME, "state.db")
+            store = storage.Store(conn)
+            loaded = store.load()
+            return store, loaded
+        except Exception as exc:  # noqa: BLE001 - только класс: в базе тексты беседы
+            logger.warning("state storage unavailable: %s", type(exc).__name__)
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
+            return None, None
+
+    def _close_store(self) -> None:
+        store, self._store = self._store, None
+        if store is not None:
+            with contextlib.suppress(Exception):
+                store.close()
 
     async def _tick_loop(self) -> None:
         while True:
