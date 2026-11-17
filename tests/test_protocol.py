@@ -242,6 +242,43 @@ class TextTests(unittest.TestCase):
                 self.assertNotRegex(text, r"[*_`#\[\]<>]|https?://")
 
 
+class DialogTextTests(unittest.TestCase):
+    """Тексты среза «б» — дословно из решений владельца 2026-11-17 (docs/PLAN.md, этап 2)."""
+    VERBATIM = {
+        "REPLY_SAY_NEW_OR_OLD": "Скажите „новый“ или „прошлый“.",
+        "REPLY_ANSWER_WAITS": "Хорошо, ответ подождёт.",
+        "REPLY_REST_IN_TELEGRAM": "Хорошо, остальное пришлю в Телеграм.",
+        "REPLY_OK": "Хорошо.",
+        "REPLY_HELLO_CONTINUE": "Слушаю. Продолжаем прошлый разговор.",
+        "REPLY_STILL_WORKING": "Всё ещё работаю. Подождёте?",
+        "REPLY_NOT_YET": "Пока нет. Ждём дальше?",
+        "REPLY_WAIT_APPROVAL": "Жду подтверждения в Телеграме. Подождёте?",
+        "REPLY_TG_FAILED": "Не смогла отправить в Телеграм. Озвучить?",
+        "REPLY_TG_UNCERTAIN": "Возможно, ответ не дошёл до Телеграма.",
+        "REPLY_HELP": "Задайте вопрос, я передам его агенту. Пока ответ готовится, можно подождать, спросить позже или "
+                      "сказать „пришли в Телеграм“. „Новый диалог“ начинает разговор заново.",
+        "REPLY_NOTHING_TO_REPEAT": "Пока нечего повторить.",
+        "REPLY_PING": "pong",
+    }
+
+    def test_texts_are_verbatim(self):
+        for name, text in self.VERBATIM.items():
+            with self.subTest(name=name):
+                self.assertEqual(getattr(p, name, None), text)
+
+    def test_wait_rounds_order(self):
+        self.assertEqual(p.WAIT_ROUNDS, ("Ещё не готово. Подождёте?", "Всё ещё работаю. Подождёте?",
+                                         "Пока нет. Ждём дальше?"))
+
+    def test_whole_text_strips_markers_and_keeps_body(self):
+        self.assertEqual(p.whole_text("ГОЛОС: Цена 1500.\nТЕЛЕГРАМ: Счёт №7.\nТелеграм: @ivan"),
+                         "Алиса:\nЦена 1500.\nСчёт №7.\nТелеграм: @ivan")
+
+    def test_whole_text_of_gateway_error_is_as_is(self):
+        raw = "⚠️ No reply: the model didn't produce a reply."
+        self.assertEqual(p.whole_text(f"  {raw}\n"), "Алиса:\n" + raw)
+
+
 class IntentTests(unittest.TestCase):
     def test_own_and_builtin_intents_are_recognized(self):
         names = ["hya.answer.get", "hya.dialog.new", "hya.dialog.continue", "hya.wait", "hya.later",

@@ -35,6 +35,22 @@ REPLY_NOT_OWNER = "Этот навык работает только для вл
 REPLY_UNBOUND = "Навык ещё не привязан к владельцу."
 REPLY_REJECTED = "Такую команду я не передам."
 REPLY_RATE = "Слишком много команд подряд, подождите минуту."
+# Решения владельца 2026-11-17 (этап 2, срез «б», docs/PLAN.md).
+REPLY_SAY_NEW_OR_OLD = "Скажите „новый“ или „прошлый“."
+REPLY_ANSWER_WAITS = "Хорошо, ответ подождёт."
+REPLY_REST_IN_TELEGRAM = "Хорошо, остальное пришлю в Телеграм."
+REPLY_OK = "Хорошо."
+REPLY_HELLO_CONTINUE = "Слушаю. Продолжаем прошлый разговор."
+REPLY_STILL_WORKING = "Всё ещё работаю. Подождёте?"
+REPLY_NOT_YET = "Пока нет. Ждём дальше?"
+WAIT_ROUNDS = (REPLY_NOT_READY, REPLY_STILL_WORKING, REPLY_NOT_YET)   # петля Д8 по кругу
+REPLY_WAIT_APPROVAL = "Жду подтверждения в Телеграме. Подождёте?"
+REPLY_TG_FAILED = "Не смогла отправить в Телеграм. Озвучить?"
+REPLY_TG_UNCERTAIN = "Возможно, ответ не дошёл до Телеграма."
+REPLY_HELP = ("Задайте вопрос, я передам его агенту. Пока ответ готовится, можно подождать, спросить позже или сказать "
+              "„пришли в Телеграм“. „Новый диалог“ начинает разговор заново.")
+REPLY_NOTHING_TO_REPEAT = "Пока нечего повторить."
+REPLY_PING = "pong"         # служебная проверка Яндекса — без хода агента (Д17; порядок проверок — адаптер)
 TELEGRAM_LABEL = "Алиса:"   # подпись всего, что плагин шлёт в Telegram
 
 MAX_BODY = 16 * 1024   # байт тела запроса от Яндекса
@@ -221,6 +237,20 @@ def telegram_text(text: str) -> str:
 
 # Ссылка (со схемой, www., домен с путём вроде t.me/…) или адрес почты — голосом не прочесть (П5).
 _LINK = re.compile(r"https?://|www\.|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}/\S|[\w.+-]+@[\w-]+\.[\w.]+", re.I)
+
+
+def whole_text(raw: str) -> str:
+    """Весь итог хода для Telegram с подписью — «пришли в Телеграм», «новый диалог», истёкший незабранный (Д13).
+    Маркеры формата срезаются; ошибка шлюза уходит как есть."""
+    return telegram_text(raw.strip() if is_gateway_error(raw) else _strip_markers(raw))
+
+
+def spoken(raw: str) -> list[str]:
+    """Весь ответ голосом, без разделения на ГОЛОС/ТЕЛЕГРАМ: когда Telegram нет (не настроен, или это повтор из
+    истории). Ошибка шлюза — «не получилось»."""
+    if is_gateway_error(raw):
+        return [REPLY_FAILED]
+    return voice_parts(_clean_voice(_strip_markers(raw)))
 
 
 def voice_reply(raw: str) -> Reply:
