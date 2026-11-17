@@ -64,6 +64,7 @@ class State:
     asks: tuple[float, ...] = ()       # времена ходов агента за последнюю минуту (лимит Д16)
     last_turn: str = ""                # turn_id (session_id-message_id) последней реплики — дедупликация ретрая
     last_reply: str = ""               # что ей ответили; "" — ответ ещё готовится (удержание)
+    answered: bool = False             # в текущей беседе был итог: пустая история при «повтори» — сбой, а не «нечего» (S7)
 
 
 # --- события -------------------------------------------------------------------------------------------------------
@@ -130,11 +131,16 @@ class InternalStarted:
     conversation: str
 
 
+RECALL_FOUND, RECALL_MISSING, RECALL_ERROR = "found", "missing", "error"   # исход чтения истории (S7)
+
+
 @dataclass(frozen=True)
 class Recalled:
-    """Последний ответ беседы из истории Hermes по RecallLast; None — повторять нечего."""
+    """Последний ответ беседы из истории Hermes по RecallLast. outcome: found — прочитали (text None — ответа с
+    текстом нет); missing — сессии беседы в истории нет; error — чтение не удалось (база занята, срок, исключение)."""
     now: float
     text: str | None
+    outcome: str = RECALL_FOUND
 
 
 @dataclass(frozen=True)
@@ -218,6 +224,8 @@ def _dispatch(state: State, event: object, settings: Settings) -> tuple[State, t
     if isinstance(event, Utterance):
         return _utterance(state, event, settings)
     if isinstance(event, Final):
+        if event.conversation == state.conversation:
+            state = replace(state, answered=True)
         return _final(state, event, settings)
     if isinstance(event, Expired):
         return _expired(state, event, settings)
@@ -237,6 +245,8 @@ def _dispatch(state: State, event: object, settings: Settings) -> tuple[State, t
 def _expired(st: State, ev: Expired, settings: Settings) -> tuple[State, tuple[object, ...]]:
     if st.announce:
         return _say(st, st.announce, announce="", holding="", prompt=IDLE)
+    if st.holding == "recall":   # чтение истории не уложилось в бюджет: вопроса агенту нет, ждать нечего (S7, Р-S7-2)
+        return _say(st, p.REPLY_FAILED, holding="", prompt=IDLE)
     if st.holding == "ask":
         return _say(st, p.REPLY_ACCEPTED, holding="", prompt=WAIT)
     if st.question and st.question.approval:
@@ -316,10 +326,14 @@ def _help(st: State) -> tuple[State, tuple[object, ...]]:
 
 def _recalled(st: State, ev: Recalled) -> tuple[State, tuple[object, ...]]:
     """Повтор из истории — голосом целиком, без отправки в Telegram; ошибка шлюза — «не получилось»."""
+    if st.holding != "recall":   # поздний ответ: срок вышел, беседа сменилась или шлюз перезапустился
+        return st, ()
     st = replace(st, holding="")
+    if ev.outcome == RECALL_ERROR:
+        return _say(st, p.REPLY_FAILED)
     parts = tuple(p.spoken(ev.text)) if ev.text else ()
-    if not parts:
-        return _say(st, p.REPLY_NOTHING_TO_REPEAT)
+    if not parts:   # текста нет: итог в беседе был — прочитать не удалось (Р-S7-3), не было — повторять нечего
+        return _say(st, p.REPLY_FAILED if st.answered else p.REPLY_NOTHING_TO_REPEAT)
     return _part(st, parts, 0)
 
 
@@ -389,7 +403,7 @@ def _new_dialog(st: State, ev: Utterance, settings: Settings) -> tuple[State, tu
     to_telegram = (bool(sent) or st.question is not None) and settings.telegram
     held = st.held
     st = replace(st, conversation=ev.fresh_id, question=None, answer=None, holding="", prompt=IDLE, held="",
-                 wait_round=0, orphans=orphans, reading=(), reading_pos=0)
+                 wait_round=0, orphans=orphans, reading=(), reading_pos=0, answered=False)
     if held:   # М1: удержанная фраза — первый вопрос новой беседы; про Telegram — перед ближайшим ответом
         if to_telegram:
             st = replace(st, notice=f"{st.notice} {p.REPLY_IN_TELEGRAM}".strip())
@@ -406,7 +420,7 @@ def _launch(st: State, ev: Utterance, settings: Settings) -> tuple[State, State 
     fresh = (st.question is None and st.answer is None
              and (st.last_owner_at is None or ev.now - st.last_owner_at >= settings.continue_hours * 3600))
     if fresh:
-        st = replace(st, conversation=ev.fresh_id)
+        st = replace(st, conversation=ev.fresh_id, answered=False)
     if ev.text or ev.intents:
         return st, st, ()
     st = replace(st, last_owner_at=ev.now)

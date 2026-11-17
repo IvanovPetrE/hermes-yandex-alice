@@ -333,7 +333,8 @@ class HelpRepeatTests(unittest.TestCase):
         self.assertEqual(acts, (d.RecallLast(CONV),))
         _, acts = d.step(st, d.Recalled(now=100.1, text="**Солнечно.** https://example.test"))
         self.assertEqual(acts, (d.Say("Солнечно."),))
-        _, acts = d.step(st, d.Recalled(now=100.1, text=None))
+        fresh, _ = d.step(d.State(conversation=CONV), utter("повтори", REPEAT))   # итога в беседе не было
+        _, acts = d.step(fresh, d.Recalled(now=100.1, text=None))
         self.assertEqual(acts, (d.Say("Пока нечего повторить."),))
 
     def test_recalled_long_answer_is_read_by_parts(self):
@@ -671,6 +672,57 @@ class ReviewFixTests(unittest.TestCase):
                                            fallback=("X",)))
         st, _ = d.step(st, d.Final(now=96.0, conversation=CONV, text="Солнечно."))
         self.assertEqual((st.answer.parts, st.answer.undelivered), (("Солнечно.",), False))
+
+
+class RecallTests(unittest.TestCase):
+    """S7: «повтори» из истории Hermes — сбой чтения и срок (docs/PLAN.md, этап 2, срез «б», Р-S7-1…3)."""
+
+    def test_expired_while_recalling_says_failed(self):
+        st, acts = d.step(answered(), utter("повтори", REPEAT))
+        self.assertEqual(acts, (d.RecallLast(CONV),))
+        st, acts = d.step(st, d.Expired(now=103.5))
+        self.assertEqual(acts, (d.Say(FAILED),))
+        self.assertEqual((st.holding, st.prompt), ("", d.IDLE))
+
+    def test_late_recall_after_expired_is_ignored(self):
+        st, _ = d.step(answered(), utter("повтори", REPEAT))
+        st, _ = d.step(st, d.Expired(now=103.5))
+        st2, acts = d.step(st, d.Recalled(now=104.0, text="Солнечно."))
+        self.assertEqual((acts, st2), ((), st))
+
+    def test_read_error_says_failed_and_repeat_reads_again(self):
+        st, _ = d.step(answered(), utter("повтори", REPEAT, turn="s1-5"))
+        st, acts = d.step(st, d.Recalled(now=100.1, text=None, outcome=d.RECALL_ERROR))
+        self.assertEqual(acts, (d.Say(FAILED),))
+        _, acts = d.step(st, utter("повтори", REPEAT, turn="s1-6", now=101.0))
+        self.assertEqual(acts, (d.RecallLast(CONV),))
+
+    def test_missing_or_textless_after_an_answer_is_a_failure(self):
+        for outcome in (d.RECALL_MISSING, d.RECALL_FOUND):
+            with self.subTest(outcome=outcome):
+                st, _ = d.step(answered(), utter("повтори", REPEAT))
+                _, acts = d.step(st, d.Recalled(now=100.1, text=None, outcome=outcome))
+                self.assertEqual(acts, (d.Say(FAILED),))
+
+    def test_missing_in_a_new_dialog_is_nothing_to_repeat(self):
+        new, _ = d.step(answered(), utter("новый диалог", "hya.dialog.new", now=110.0, turn="s1-7"))
+        fresh_launch = utter("повтори", REPEAT, now=100.0 + 3 * HOUR, turn="s2-1", launch=True)
+        for name, st, event, conv in (("новый диалог", new, utter("повтори", REPEAT, now=111.0, turn="s1-8"), FRESH),
+                                      ("свежий запуск", answered(), fresh_launch, FRESH)):
+            with self.subTest(name):
+                st, acts = d.step(st, event)
+                self.assertEqual(acts, (d.RecallLast(conv),))
+                _, acts = d.step(st, d.Recalled(now=200.0, text=None, outcome=d.RECALL_MISSING))
+                self.assertEqual(acts, (d.Say("Пока нечего повторить."),))
+
+    def test_late_recall_after_new_dialog_or_gateway_restart_is_ignored(self):
+        reading_history, _ = d.step(answered(), utter("повтори", REPEAT, turn="s1-5"))
+        for name, event in (("новый диалог", utter("новый диалог", "hya.dialog.new", now=101.0, turn="s1-6")),
+                            ("перезапуск шлюза", d.GatewayStarted(now=101.0))):
+            with self.subTest(name):
+                st, _ = d.step(reading_history, event)
+                st2, acts = d.step(st, d.Recalled(now=101.5, text="Солнечно."))
+                self.assertEqual((acts, st2), ((), st))
 
 
 class LaunchKeepsPendingTests(unittest.TestCase):
