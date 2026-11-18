@@ -54,6 +54,7 @@ SKILL, OWNER = "compat-skill", "compat-owner"
 WAITING = ("Вопрос принят. Спросите ответ позже или готовы подождать?", "Ещё не готово. Подождёте?",
            "Всё ещё работаю. Подождёте?", "Пока нет. Ждём дальше?")
 TURN_TIMEOUT = 90.0
+BIG_TOKENS = 125_000   # > 0.85 × окна 128k поддельной модели: заставляет Hermes сжимать беседу
 
 
 @dataclass
@@ -80,6 +81,12 @@ class Script:
         self.queues.setdefault(token, []).extend(responses)
         if fallback is not None:
             self.fallback[token] = fallback
+
+    @staticmethod
+    def _text_of(content) -> str:
+        if isinstance(content, list):
+            return " ".join(str(p.get("text", "")) for p in content if isinstance(p, dict))
+        return str(content or "")
 
     @staticmethod
     def _last_user_text(body: dict) -> str:
@@ -130,8 +137,14 @@ def instrument(adapter, journal: list) -> None:
 class World:
     """Один шлюз Hermes с нашим плагином и скриптованным агентом на группу (процесс на группу)."""
 
-    def __init__(self, config_extra: str = "") -> None:
+    def __init__(self, config_extra: str = "", route_profile: Optional[str] = None,
+                 target_extra: str = "") -> None:
+        """`route_profile` — имя профиля-цели маршрута `yandex_alice → профиль` (раскладка A2: плагин по симлинку и в
+        цели); `target_extra` — добавка в config цели. Без профиля голос идёт в профиле по умолчанию."""
         self.config_extra = config_extra
+        self.route_profile = route_profile
+        self.target_extra = target_extra
+        self.target_home: Optional[Path] = None
         self.journal: list = []
         self.errors: dict = {}
         self.voice: dict = {}   # сценарий -> ответы Алисы подряд
@@ -146,24 +159,62 @@ class World:
         from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
 
         self.script = Script(Text)
-        llm = FakeLLMServer(self.script)
+        llm = FakeLLMServer(self.script, prompt_tokens_fn=self._tokens)
         llm.start()
         try:
             self.port, self.secret = free_port(), secrets.token_hex(32)
+            routing = ""
+            if self.route_profile:
+                routing = ("gateway:\n  multiplex_profiles: true\n  loop_watchdog: false\n  profile_routes:\n"
+                           f"    - name: alice-compat\n      platform: {PLATFORM}\n      profile: {self.route_profile}\n")
             write_hermes_home(home, llm.base_url, extra_config=(
-                "plugins:\n  enabled:\n    - yandex-alice\n"
+                routing + "plugins:\n  enabled:\n    - yandex-alice\n"
                 f"platforms:\n  {PLATFORM}:\n    enabled: true\n    extra:\n      port: {self.port}\n" + self.config_extra))
-            cfg = home / "config.yaml"
-            text = cfg.read_text(encoding="utf-8")
-            if text.count("\nagent:\n") != 1:
-                raise AssertionError("expected exactly one agent: section")
-            cfg.write_text(text.replace("\nagent:\n", "\nagent:\n  auto_recovery_cycles: 0\n", 1), encoding="utf-8")
+            self._patch_agent(home / "config.yaml")
             with open(home / ".env", "a", encoding="utf-8") as env:   # до импорта gateway.run: он читает .env при загрузке
                 env.write(f"ALICE_PATH_SECRET={self.secret}\nALICE_SKILL_ID={SKILL}\nALICE_OWNER_USER_ID={OWNER}\n")
-            install_plugin(home)
+            plugin_dir = install_plugin(home)
+            if self.route_profile:   # раскладка A2: профиль-цель получает тот же плагин по симлинку
+                target = self.target_home = home / "profiles" / self.route_profile
+                write_hermes_home(target, llm.base_url, extra_config=(
+                    "plugins:\n  enabled:\n    - yandex-alice\n" + self.target_extra))
+                self._patch_agent(target / "config.yaml")
+                (target / "plugins").mkdir(exist_ok=True)
+                (target / "plugins" / PLUGIN_NAME).symlink_to(plugin_dir, target_is_directory=True)
             await self._gateway(scenarios)
         finally:
             llm.stop()
+
+    big = False   # True: запросы с токеном `[z…]` сообщают >0.85 окна 128k и толкают Hermes к сжатию
+
+    def _tokens(self, body: dict) -> int:
+        text = "\n".join(Script._text_of(m.get("content")) for m in body.get("messages") or [])
+        return BIG_TOKENS if self.big and "[z" in text else 100
+
+    def target_db_view(self) -> dict:
+        """Что `state.db` профиля-цели (иначе — дома) хранит о голосовых сессиях: счётчик Hermes и число строк."""
+        import sqlite3
+
+        path = (self.target_home or temp_home()) / "state.db"
+        if not path.exists():
+            return {"state_db": "missing"}
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        try:
+            sessions = []
+            for sid, count, parent in con.execute("SELECT id, message_count, parent_session_id FROM sessions "
+                                                  "WHERE source = ?", (PLATFORM,)):
+                rows = con.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (sid,)).fetchone()[0]
+                sessions.append({"message_count": count, "rows": rows, "parent": parent})
+            return {"sessions": sessions}
+        finally:
+            con.close()
+
+    @staticmethod
+    def _patch_agent(cfg: Path) -> None:
+        text = cfg.read_text(encoding="utf-8")
+        if text.count("\nagent:\n") != 1:
+            raise AssertionError(f"expected exactly one agent: section in {cfg}")
+        cfg.write_text(text.replace("\nagent:\n", "\nagent:\n  auto_recovery_cycles: 0\n", 1), encoding="utf-8")
 
     async def _gateway(self, scenarios) -> None:
         from gateway.config import Platform, load_gateway_config
@@ -191,15 +242,17 @@ class World:
 
     # --- Алиса ----------------------------------------------------------------------------------------------------
 
-    async def say(self, text: str, *, confirm: bool = False) -> str:
+    async def say(self, text: str, *, confirm: bool = False, intents: tuple = (), new: bool = False,
+                  session: str = "compat-session") -> str:
         import aiohttp
 
         self._n += 1
         request: dict = {"original_utterance": text, "command": text, "type": "SimpleUtterance"}
-        if confirm:
-            request["nlu"] = {"intents": {"YANDEX.CONFIRM": {}}}
+        names = (("YANDEX.CONFIRM",) if confirm else ()) + tuple(intents)
+        if names:
+            request["nlu"] = {"intents": {name: {} for name in names}}
         body = {"request": request, "version": "1.0",
-                "session": {"session_id": "compat-session", "message_id": self._n, "skill_id": SKILL, "new": False,
+                "session": {"session_id": session, "message_id": self._n, "skill_id": SKILL, "new": new,
                             "user": {"user_id": OWNER}}}
         async with aiohttp.ClientSession() as session:
             async with session.post(f"http://127.0.0.1:{self.port}/{self.secret}",
