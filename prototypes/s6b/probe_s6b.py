@@ -1,6 +1,6 @@
 """Prototype S6b: where does the ``pre_tool_call`` hook of a voice turn run - in the gateway, or in a worker?
 
-Question (``docs/PLAN.md``, stage 1, S6 supplement): S6 ran the agent inside the gateway process; a real
+Question (``docs/DESIGN.md``, stage 1, S6 supplement): S6 ran the agent inside the gateway process; a real
 gateway can run a turn in a managed worker (``agent/managed_worker.py``). If the voice turn ran there, would
 the hook of the target profile's plugin fire and see ``ALICE_TELEGRAM_CHAT``? By the code of Hermes v0.23.1
 (``gateway/session_managed_worker.py: managed_policy``, ``gateway/session_policy.py: policy_for_source``) only

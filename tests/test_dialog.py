@@ -1,4 +1,4 @@
-"""Машина беседы (docs/RECON.md, «Модель беседы»; docs/PLAN.md, этап 2, срез «б») — без Hermes и без времени.
+"""Машина беседы (docs/RECON.md, «Модель беседы»; docs/DESIGN.md, этап 2, срез «б») — без Hermes и без времени.
 
 Тексты для владельца сверяются литералами, а не константами protocol (решения владельца — источник ожидаемого).
 """
@@ -884,7 +884,7 @@ class ReviewFixTests(unittest.TestCase):
 
 
 class RecallTests(unittest.TestCase):
-    """S7: «повтори» из истории Hermes — сбой чтения и срок (docs/PLAN.md, этап 2, срез «б», Р-S7-1…3)."""
+    """S7: «повтори» из истории Hermes — сбой чтения и срок (docs/DESIGN.md, этап 2, срез «б», Р-S7-1…3)."""
 
     def test_expired_while_recalling_says_failed(self):
         st, acts = d.step(answered(), utter("повтори", REPEAT))
@@ -1011,7 +1011,7 @@ def ask(text):
     return (d.Ask(CONV, text), d.Hold())
 
 
-# Таблица «последний вопрос Алисы × реплика» (docs/PLAN.md, этап 2, срез «б»): каждая клетка — литерал.
+# Таблица «последний вопрос Алисы × реплика» (docs/DESIGN.md, этап 2, срез «б»): каждая клетка — литерал.
 TABLE = {
     "беседа": (answered, {
         "да": ask("да"), "нет": ask("нет"), "без интента": ask("а завтра?"), "пусто": say("Слушаю."),

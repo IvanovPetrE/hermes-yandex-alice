@@ -1,4 +1,4 @@
-"""Доставка в Telegram (docs/PLAN.md, этап 5, срез «а») — без Hermes и сети: отправитель — фейк, SQLite — настоящий."""
+"""Доставка в Telegram (docs/DESIGN.md, этап 5, срез «а») — без Hermes и сети: отправитель — фейк, SQLite — настоящий."""
 import asyncio
 import sqlite3
 import sys

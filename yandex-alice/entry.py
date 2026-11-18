@@ -1,4 +1,4 @@
-"""Порядок проверок HTTP-входа (docs/PLAN.md, этап 3, срез «б», б1) — без Hermes и без aiohttp.
+"""Порядок проверок HTTP-входа (docs/DESIGN.md, этап 3, срез «б», б1) — без Hermes и без aiohttp.
 
 Адаптер зовёт `check_path(tail, cfg)` ДО чтения тела (иначе 413 пришёл бы на неверный путь раньше 404), затем читает тело
 с лимитом `protocol.MAX_BODY` и зовёт `screen(body, cfg, on_unbound)`. Порядок: путь → размер → формат → `ping` → skill_id →

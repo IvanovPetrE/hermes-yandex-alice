@@ -298,7 +298,7 @@ class ApprovalTextTests(unittest.TestCase):
 
 
 class DialogTextTests(unittest.TestCase):
-    """Тексты среза «б» — дословно из решений владельца 2026-11-17 (docs/PLAN.md, этап 2)."""
+    """Тексты среза «б» — дословно из решений владельца 2026-11-17 (docs/DESIGN.md, этап 2)."""
     VERBATIM = {
         "REPLY_SAY_NEW_OR_OLD": "Скажите „новый“ или „прошлый“.",
         "REPLY_ANSWER_WAITS": "Хорошо, ответ подождёт.",

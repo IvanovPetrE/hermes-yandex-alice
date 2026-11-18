@@ -1,4 +1,4 @@
-"""Подтверждения опасных команд через карточку в Telegram (docs/PLAN.md, этап 5, срез «б»; docs/RECON.md, «S4») —
+"""Подтверждения опасных команд через карточку в Telegram (docs/DESIGN.md, этап 5, срез «б»; docs/RECON.md, «S4») —
 без Hermes, PTB и сети: бот и Hermes — фейки, часы — инъекцией."""
 import asyncio
 import sys

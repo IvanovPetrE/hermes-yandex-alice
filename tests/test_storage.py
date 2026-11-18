@@ -1,4 +1,4 @@
-"""Хранилище состояния беседы (docs/PLAN.md, этап 4) — настоящий SQLite во временном каталоге, без Hermes."""
+"""Хранилище состояния беседы (docs/DESIGN.md, этап 4) — настоящий SQLite во временном каталоге, без Hermes."""
 import dataclasses
 import json
 import sqlite3

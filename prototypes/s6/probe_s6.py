@@ -1,6 +1,6 @@
 """Prototype S6: the voice platform's gateway session and cron jobs created by voice.
 
-What it answers (``docs/PLAN.md``, stage 1, S6): can a ``kind: platform`` plugin living in the DEFAULT profile
+What it answers (``docs/DESIGN.md``, stage 1, S6): can a ``kind: platform`` plugin living in the DEFAULT profile
 of a multiplexing gateway, through the public plugin API only, (a) rely on the gateway session as the history
 of a conversation - its key and what context compression does to it; (b) get the result of a cron job
 created by voice to Telegram instead of losing it on the ``origin`` address (the voice channel never speaks

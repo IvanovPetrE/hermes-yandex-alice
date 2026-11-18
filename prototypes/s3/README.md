@@ -1,6 +1,6 @@
 # Прототип S3: подробный ответ в Telegram через `standalone_sender_fn`
 
-Этап 1, S3 (`docs/PLAN.md`). Отвечает на вопрос: может ли плагин `kind: platform`, живущий в профиле
+Этап 1, S3 (`docs/DESIGN.md`). Отвечает на вопрос: может ли плагин `kind: platform`, живущий в профиле
 **по умолчанию** мультиплексирующего шлюза, доставить текст в настроенный чат Telegram ботом профиля по
 умолчанию через `platform_registry.get("telegram").standalone_sender_fn(pconfig, chat_id, text)` — из
 контекста своего `connect()` и из области маршрутизированного профиля, внутри работающего event loop,

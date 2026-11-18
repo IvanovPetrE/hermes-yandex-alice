@@ -1,4 +1,4 @@
-"""Порядок проверок HTTP-входа (docs/PLAN.md, этап 3, срез «б», б1) — без Hermes и без aiohttp.
+"""Порядок проверок HTTP-входа (docs/DESIGN.md, этап 3, срез «б», б1) — без Hermes и без aiohttp.
 
 Секрет, skill и user здесь выдуманные.
 """

@@ -1,4 +1,4 @@
-"""Подтверждения опасных команд голосового хода через карточку в Telegram (docs/PLAN.md, этап 5, срез «б»;
+"""Подтверждения опасных команд голосового хода через карточку в Telegram (docs/DESIGN.md, этап 5, срез «б»;
 docs/RECON.md, «S4») — только стандартная библиотека и asyncio, без Hermes и PTB.
 """
 from __future__ import annotations

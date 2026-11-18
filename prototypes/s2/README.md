@@ -1,6 +1,6 @@
 # Прототип S2: профиль и `profile_routes` для плагинной платформы
 
-Этап 1, S2 (`docs/PLAN.md`). Отвечает на вопрос: при мультиплексе профилей
+Этап 1, S2 (`docs/DESIGN.md`). Отвечает на вопрос: при мультиплексе профилей
 (`gateway.multiplex_profiles: true`) может ли плагин `kind: platform` жить в профиле **по умолчанию**
 (каталог плагина, `plugins.enabled`, `platforms.yandex_alice`, `ALICE_*` в его `.env`), а маршрут
 `gateway.profile_routes` без `user_id` переводить каждый ход в другой профиль — с его SOUL,

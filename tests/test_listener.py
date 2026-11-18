@@ -1,4 +1,4 @@
-"""Лимит одновременных соединений (HERMESYAND-6, docs/PLAN.md, этап 3) — без Hermes и aiohttp: настоящий loopback,
+"""Лимит одновременных соединений (HERMESYAND-6, docs/DESIGN.md, этап 3) — без Hermes и aiohttp: настоящий loopback,
 протокол-эхо вместо aiohttp. Срез 1: соединение сверх лимита закрывается сразу, принятые работают."""
 import asyncio
 import logging
