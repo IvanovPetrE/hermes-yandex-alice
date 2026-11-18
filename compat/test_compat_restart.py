@@ -369,7 +369,7 @@ async def sc_pending(w) -> None:
     w.state["redelivered"] = await w.wait_op(
         lambda op: op.op == "send" and op.pid == second.pid and "r08" in op.content, 60.0, mark)
     w.state["telegram"] = await poll(
-        lambda: [v.text for v in standin.visible(CHAT) if "Ответ r08." in v.text], 30.0)
+        lambda: [v.text.replace("\\", "") for v in standin.visible(CHAT) if "Ответ r08" in v.text], 30.0)   # без экранов MarkdownV2
     for _ in range(3):   # голосом ответа нет: вопрос в работе, «да» только продлевает ожидание
         w.voice["r08"].append(await w.say("да", confirm=True))
     w.state["sends"] = [op for op in w.journal if op.op == "send" and op.pid == second.pid and "r08" in op.content]

@@ -320,6 +320,10 @@ class _BusyGroup(unittest.TestCase):
     def _mids(self, token: str) -> list:
         return [op.mid for op in self.world.journal if op.op == "ask" and token in op.content]
 
+    def plain_telegram(self) -> list:
+        """Тексты чата владельца без экранирования MarkdownV2 (отправитель Hermes экранирует `.` и др.)."""
+        return [text.replace("\\", "") for text in self.telegram]
+
     def check_common(self) -> None:
         self.assertNotIn("busy_after_lost", self.world.errors, self.world.errors.get("busy_after_lost"))
         (mid,) = self._mids("[t44]")
@@ -337,11 +341,19 @@ class GroupQ(_BusyGroup):
 
     BUSY_MODE = "queue"
 
-    def test_second_phrase_reaches_hermes_and_the_late_final_goes_to_telegram_not_voice(self) -> None:
+    def test_second_phrase_reaches_hermes_and_both_finals_go_to_telegram_not_voice(self) -> None:
+        """Факт v0.23.2: итог занятого хода и ответ на вторую фразу приходят с `reply_to` ПЕРВОГО хода (снятого тиком),
+        поэтому оба — поздние итоги: в Telegram с подписью, голосом звучит «Не получилось»."""
         self.check_common()
+        second = [op for op in self.world.journal if op.op == "send" and "Ответ сорок пятый." in op.content]
+        (first_mid,) = self._mids("[t44]")
+        self.assertEqual([op.reply_to for op in second], [first_mid], "ответ на вторую фразу пришёл с reply_to первого хода")
         spoken = " ".join(s for lines in self.world.voice.values() for s in lines)
         self.assertNotIn(LATE_FINAL, spoken, "поздний итог прошлого хода не должен звучать")
-        self.assertIn("Алиса:\n" + LATE_FINAL, self.telegram, "поздний итог не пришёл в Telegram")
+        self.assertNotIn("Ответ сорок пятый.", spoken, "ответ на вторую фразу голосом не звучит (известное ограничение)")
+        self.assertEqual(self.world.voice["busy2"][-1], "Не получилось, попробуйте ещё раз.")
+        for text in ("Алиса:\n" + LATE_FINAL, "Алиса:\nОтвет сорок пятый."):
+            self.assertIn(text, self.plain_telegram(), "итог не пришёл в Telegram")
 
 
 class GroupI(_BusyGroup):
