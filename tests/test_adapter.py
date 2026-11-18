@@ -179,6 +179,37 @@ class LifecycleTests(AdapterCase):
         self.assertEqual(await self.say(QUESTION), ("Готово, всё хорошо.", False))
 
 
+class ConnectionLimitTests(AdapterCase):
+    """HERMESYAND-6: не более 20 одновременных соединений; лишнее закрывается сразу, без ответа."""
+
+    async def test_the_21st_connection_is_closed_and_a_freed_slot_is_reusable(self) -> None:
+        await self.start()
+        held = []
+        for _ in range(20):
+            reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
+            held.append((reader, writer))
+            self.addCleanup(writer.close)
+        with self.assertLogs("hya_plugin.listener", level="WARNING") as logs:
+            reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
+            self.addCleanup(writer.close)
+            try:   # лишнее соединение закрыто сервером без ответа
+                data = await asyncio.wait_for(reader.read(1), 2)
+            except ConnectionResetError:
+                data = b""
+        self.assertEqual(data, b"")
+        self.assertEqual(logs.output, ["WARNING:hya_plugin.listener:connection limit reached: rejected=1"])
+        self.assertNotIn(str(self.port), logs.output[0])
+        held[0][1].close()   # освободили один слот: новое соединение принимается и обслуживается
+        await held[0][1].wait_closed()
+        for _ in range(50):   # сервер узнаёт о закрытии асинхронно
+            try:
+                if await self.say("ping") == ("pong", False):
+                    return
+            except (aiohttp.ClientError, ConnectionError):
+                await asyncio.sleep(0.02)
+        self.fail("слот не освободился после закрытия соединения")
+
+
 class NegativeHttpTests(AdapterCase):
     async def test_wrong_path_is_404(self):
         await self.start()

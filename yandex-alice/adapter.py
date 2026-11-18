@@ -29,12 +29,13 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session_context import get_session_env
 from hermes_constants import get_hermes_home
 
-from . import approvals, cron_guard, delivery, dialog, engine, entry, history, protocol, sends, storage
+from . import approvals, cron_guard, delivery, dialog, engine, entry, history, listener, protocol, sends, storage
 
 PLATFORM = "yandex_alice"
 PLUGIN_NAME = "yandex-alice"   # каталог данных плагина: plugin-data/<имя>/
 TICK_SECONDS = 60.0     # период проверки сроков (Д13, Д9)
 READ_TIMEOUT = 5.0      # с на чтение тела запроса: защита от медленной отправки
+MAX_CONNECTIONS = 20    # одновременных соединений слушателя; лишнее закрывается сразу (HERMESYAND-6)
 
 logger = logging.getLogger(__name__)
 
@@ -222,8 +223,9 @@ class AliceAdapter(BasePlatformAdapter):
             app.router.add_post("/{tail:.*}", self._http)
             runner = web.AppRunner(app, access_log=None)
             await runner.setup()
-            site = web.TCPSite(runner, "127.0.0.1", port)   # только loopback
-            await site.start()
+            # только loopback; лимит соединений — своя фабрика протоколов вместо TCPSite (в aiohttp лимита нет)
+            site = await asyncio.get_running_loop().create_server(
+                listener.ConnectionLimit(runner.server, MAX_CONNECTIONS), "127.0.0.1", port)
         except BaseException as exc:   # любой сбой запуска (и отмена) не оставляет движок и соединение с базой
             if runner is not None:
                 with contextlib.suppress(Exception):
@@ -262,7 +264,7 @@ class AliceAdapter(BasePlatformAdapter):
             await asyncio.gather(self._tick, return_exceptions=True)   # отмена самого disconnect() не глотается
         if self._site is not None:
             with contextlib.suppress(Exception):
-                await self._site.stop()
+                self._site.close()   # слушающий сокет закрыт до runner.cleanup(), который закроет соединения
         if self._courier is not None:   # идущая отправка обрывается: запись остаётся, следующий connect() повторит её
             courier, self._courier = self._courier, None
             await courier.close()
