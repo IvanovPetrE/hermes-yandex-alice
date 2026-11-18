@@ -297,6 +297,23 @@ async def sc_resume_kill(w) -> None:
     await sc_resume(w, "kill", "r02")
 
 
+async def sc_idle_restart(w) -> None:
+    """Штатный перезапуск в простое (B1 пробы S7): беседа та же, «повтори» читает прежний ответ, следующий ход
+    дописывается в ту же сессию."""
+    f = _fakes()
+    w.script.add("r06", f.Text("Ответ r06."))
+    w.script.add("r07", f.Text("Ответ r07."))
+    first = await w.start()
+    await w.ask("r06", "первый [r06] вопрос")
+    w.state["stopped_clean"] = await w.stop(first)
+    w.state["sessions_before"] = len(w.target_db_view().get("sessions", []))
+    await w.start()
+    w.state["repeat_after_restart"] = await w.say("повтори", intents=(REPEAT,))
+    await w.ask("r07", "второй [r07] вопрос")
+    w.state["repeat_next"] = await w.say("повтори", intents=(REPEAT,))
+    w.state["sessions_after"] = len(w.target_db_view().get("sessions", []))
+
+
 async def sc_ledger(w) -> None:
     """SIGKILL внутри итоговой send(): леджер Hermes досылает текст с пометкой «♻️…:» вне хода."""
     f = _fakes()
@@ -342,6 +359,7 @@ class GroupR(_Group):
         cls.kill_w = cls.run_scene("r_kill", sc_resume_kill, **kw)
         cls.ledger_w = cls.run_scene("r_ledger", sc_ledger, **kw)
         cls.phrase_w = cls.run_scene("r_phrase", sc_new_phrase, **kw)
+        cls.idle_w = cls.run_scene("r_idle", sc_idle_restart, **kw)
 
     def check_resume(self, w, name: str, token: str) -> None:
         self.scenario_ok(w, name)
@@ -393,6 +411,16 @@ class GroupR(_Group):
         self.assertEqual(len(st["sends"]), 1, "ответ досла́н ровно один раз")
         self.assertNotIn("resume", st["llm_seen"], "автопродолжения при досылке из леджера быть не должно")
         self.assertEqual(st["repeat"], "Ответ r03.", "итог записан в историю до отправки")
+
+    def test_idle_restart_keeps_the_conversation_and_the_session(self) -> None:
+        w = self.idle_w
+        self.scenario_ok(w, "r_idle")
+        st = w.state
+        self.assertTrue(st["stopped_clean"])
+        self.assertEqual(st["repeat_after_restart"], "Ответ r06.")
+        self.assertEqual(w.voice["r07"][-1], "Ответ r07.")
+        self.assertEqual(st["repeat_next"], "Ответ r07.")
+        self.assertEqual(st["sessions_after"], st["sessions_before"], "рестарт не должен открывать новую сессию")
 
     def test_new_phrase_during_resumed_turn_does_not_reach_hermes(self) -> None:
         w = self.phrase_w
