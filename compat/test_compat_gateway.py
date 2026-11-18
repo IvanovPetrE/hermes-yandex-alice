@@ -37,6 +37,27 @@ async def sc_error(w) -> None:
     await w.ask("error", "сбой [t04] провайдера")
 
 
+async def sc_busy(w) -> None:
+    """Вторая фраза, пока первый ход идёт: до Hermes она не доходит."""
+    f = _fakes()
+    w.script.add("t20a", f.Hang(6.0), f.Text("Ответ на первую."))
+    w.script.add("t20b", f.Text("Ответ на вторую."))
+    said = w.voice.setdefault("busy", [])
+    said.append(await w.say("первая [t20a] фраза"))
+    await w.wait_seen("t20a")
+    said.append(await w.say("вторая [t20b] фраза"))
+    while said[-1] in harness.WAITING and len(said) < 25:
+        said.append(await w.say("да", confirm=True))
+
+
+async def sc_next(w) -> None:
+    """Сразу после озвученного итога — следующий вопрос."""
+    w.script.add("t21", _fakes().Text("Ответ третий."))
+    w.script.add("t22", _fakes().Text("Ответ четвёртый."))
+    await w.ask("next1", "третий [t21] вопрос")
+    await w.ask("next2", "четвёртый [t22] вопрос")
+
+
 class _Group(unittest.TestCase):
     CONFIG = ""
     SCENARIOS: list = []
@@ -64,7 +85,7 @@ class GroupA(_Group):
     def test_text(self) -> None:
         self.scenario_ok("text")
         self.assertEqual(self.world.voice["text"][-1], "Ответ первый.")
-        (turn,) = self.world.turns().values()
+        turn = next(iter(self.world.turns().values()))   # сценарий text идёт первым
         self.assertEqual(len(turn["finals"]), 1, "ровно один итог с reply_to хода и notify=True")
         self.assertLess(turn["finals"][0], turn["complete"], "итог раньше on_processing_complete")
 
@@ -94,6 +115,42 @@ class GroupA(_Group):
         spoken = " ".join(s for lines in self.world.voice.values() for s in lines)
         self.assertNotIn("📬", spoken)
         self.assertNotIn("home channel", spoken.lower())
+
+
+class GroupB(_Group):
+    """Занятая беседа, гейт Р2 и хук после итога; `busy_input_mode: queue` (худший случай из S1)."""
+
+    CONFIG = "display:\n  busy_input_mode: queue\n"
+    SCENARIOS = [("busy", sc_busy), ("next", sc_next)]
+
+    def test_second_phrase_does_not_reach_hermes_while_turn_is_open(self) -> None:
+        self.scenario_ok("busy")
+        self.assertNotIn("t20b", self.world.script.seen)
+        self.assertFalse([op for op in self.world.journal if op.op == "ask" and "[t20b]" in op.content])
+        self.assertEqual(self.world.voice["busy"][-1], "Ответ на первую.")
+
+    def test_gate_r2_no_message_while_turn_is_open(self) -> None:
+        self.scenario_ok("next")
+        self.assertEqual(self.world.voice["next1"][-1], "Ответ третий.")
+        self.assertEqual(self.world.voice["next2"][-1], "Ответ четвёртый.")
+        open_turns, asks = 0, 0
+        for op in self.world.journal:
+            if op.op == "ask":
+                asks += 1
+                self.assertEqual(open_turns, 0, "шлюзу передали фразу при открытом ходе")
+            elif op.op == "start":
+                open_turns += 1
+            elif op.op == "complete":
+                open_turns -= 1
+        self.assertEqual(asks, 3)
+
+    def test_complete_hook_after_final(self) -> None:
+        turns = self.world.turns()
+        self.assertEqual(len(turns), 3)
+        for mid, turn in turns.items():
+            with self.subTest(turn=mid):
+                self.assertEqual(len(turn["finals"]), 1)
+                self.assertTrue(turn["start"] < turn["finals"][0] < turn["complete"])
 
 
 if __name__ == "__main__":

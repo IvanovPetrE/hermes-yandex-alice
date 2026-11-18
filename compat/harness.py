@@ -211,6 +211,14 @@ class World:
             raise AssertionError("беседа закрыта: end_session=true")
         return data["response"]["text"]
 
+    async def wait_seen(self, token: str, timeout: float = 30.0) -> None:
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if token in self.script.seen:
+                return
+            await asyncio.sleep(0.05)
+        raise AssertionError(f"агент не получил запрос [{token}]")
+
     async def ask(self, name: str, text: str) -> str:
         """Вопрос и «да» на каждое «ещё думаю», пока не прозвучит что-то иное; все реплики — в `voice[name]`."""
         said = self.voice.setdefault(name, [])
