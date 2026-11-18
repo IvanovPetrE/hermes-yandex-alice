@@ -155,8 +155,10 @@ def instrument(adapter, journal: list) -> None:
     wrap("on_processing_start", lambda b: journal.append(Op(
         now(), "start", str(b["event"].source.chat_id), mid=b["event"].message_id,
         metadata={"internal": bool(getattr(b["event"], "internal", False))})))
-    wrap("on_processing_complete", lambda b: journal.append(Op(now(), "complete", str(b["event"].source.chat_id),
-                                                               mid=b["event"].message_id)))
+    wrap("on_processing_complete", lambda b: journal.append(Op(
+        now(), "complete", str(b["event"].source.chat_id), mid=b["event"].message_id,
+        metadata={"outcome": str(getattr(b.get("outcome"), "value", b.get("outcome"))),
+                  "internal": bool(getattr(b["event"], "internal", False))})))
 
 
 class World:

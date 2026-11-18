@@ -52,7 +52,6 @@ async def main(checkout: str) -> None:
     hold_flag = home / "hold_final"
     setup_logging(mode="gateway")   # как `hermes gateway run`: без файловых логов проверка «секрета нет в логах» была бы пустой
     runner = GatewayRunner(load_gateway_config())
-    ok = await runner.start()
     loop = asyncio.get_running_loop()
 
     def alice():
@@ -90,10 +89,12 @@ async def main(checkout: str) -> None:
     async def watch() -> None:
         while True:
             attach()
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
 
-    attach()
+    # Наблюдатель — до `start()`: досылку леджера Hermes делает во время старта, сразу после подключения адаптера.
     watcher = asyncio.ensure_future(watch())
+    ok = await runner.start()
+    attach()
     emit(ev="started", ok=bool(ok), alice=alice() is not None, failed=failed())
 
     async def handle(cmd: dict) -> dict:

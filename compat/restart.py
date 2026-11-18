@@ -184,6 +184,10 @@ class Child:
         except OSError:
             pass
         self.wait_exit(15)
+        try:   # без этого при сборке мусора буфер stdin мёртвого процесса печатает BrokenPipeError
+            self.proc.stdin.close()
+        except OSError:
+            pass
 
 
 class RestartWorld(harness.World):
