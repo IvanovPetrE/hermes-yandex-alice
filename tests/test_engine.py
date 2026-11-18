@@ -430,6 +430,18 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(h.engine.state.question)
         self.assertEqual(h.engine.state.announce, "")
 
+    async def test_a_request_waiting_when_the_tick_drops_the_turn_hears_a_failure(self) -> None:
+        h = Harness(budget=0.05)
+        await h.engine.handle(rq("первый", mid="1"))
+        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine._budget = 1.0
+        h.clock += 899
+        waiting = asyncio.create_task(h.engine.handle(rq("да", mid="2", nlu={"intents": {"YANDEX.CONFIRM": {}}})))
+        await settle()
+        h.clock += 1
+        h.engine.tick()
+        self.assertEqual(await waiting, p.REPLY_FAILED)
+
     async def test_a_send_in_the_open_turn_moves_the_deadline(self) -> None:
         h = Harness(budget=0.05)
         await h.engine.handle(rq("первый", mid="1"))

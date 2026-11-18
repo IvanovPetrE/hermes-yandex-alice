@@ -224,6 +224,9 @@ def _clock(st: State, now: float, settings: Settings) -> tuple[State, tuple[obje
     if lost:   # HERMESYAND-3: тихо, без озвучки; фраза, на которой это случилось, идёт агенту обычным порядком
         st = replace(st, question=None, wait_round=0)
         acts += (DropTurn(st.conversation), Telegram(st.conversation, p.telegram_text(p.REPLY_TURN_LOST)))
+        if st.holding == "wait":   # запрос Алисы ждёт итог, которого не будет — как закрытый ход при удержании
+            st, said = _say(st, p.REPLY_FAILED, holding="")
+            acts += said
     if st.answer is None and (st.prompt in (READY, TG_FAILED)
                               or (st.prompt in (WAIT, NEW_OR_OLD) and st.question is None)):
         st = replace(st, prompt=IDLE, held="")

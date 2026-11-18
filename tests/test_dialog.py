@@ -532,6 +532,13 @@ class LostTurnTests(unittest.TestCase):
         _, acts = d.step(st, utter("а завтра?", now=95.0 + MIN15, turn="s1-9"))
         self.assertEqual(acts[2:], (d.Ask(CONV, "а завтра?"), d.Hold()))
 
+    def test_a_request_held_when_the_turn_is_dropped_hears_a_failure_not_still_working(self):
+        st, acts = d.step(started(), utter("да", YES, now=990.0, turn="s1-9"))
+        self.assertEqual((acts, st.holding), ((d.Hold(),), "wait"))
+        st, acts = d.step(st, d.Tick(now=95.0 + MIN15))
+        self.assertEqual(acts, (d.DropTurn(CONV), d.Telegram(CONV, TURN_LOST_TG), d.Say(FAILED)))
+        self.assertEqual((st.holding, st.question, st.last_reply), ("", None, FAILED))   # ретрай получит то же
+
     def test_sign_of_life_of_another_conversation_is_ignored(self):
         st, _ = d.step(started(), d.TurnAlive(now=500.0, conversation="old-conv"))
         _, acts = d.step(st, d.Tick(now=95.0 + MIN15))
