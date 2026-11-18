@@ -24,9 +24,9 @@ HERE = Path(__file__).resolve().parent
 
 
 def checkout_dir() -> str:
-    import tests.fakes
+    from tests.fakes import fake_llm_provider   # `tests.fakes` — пакет-пространство имён, у него нет `__file__`
 
-    return str(Path(tests.fakes.__file__).resolve().parents[2])
+    return str(Path(fake_llm_provider.__file__).resolve().parents[2])
 
 
 def scene_home(name: str) -> Path:
