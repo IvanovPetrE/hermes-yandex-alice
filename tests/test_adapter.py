@@ -424,6 +424,41 @@ class LostTurnTests(AdapterCase):
         self.assertGreaterEqual(ad._engine.state.question.alive_at, started + 600)
 
 
+class RecoveredSendTests(AdapterCase):
+    """HERMESYAND-4: пометка «♻️ …:» у отправки вне хода — восстановленный ответ только при вопросе в работе и
+    перезапуске шлюза после него; иначе это обычная отправка вне хода (Telegram, вопрос не закрыт)."""
+
+    MARKED = "♻️ Чужая рассылка:\n\nТекст рассылки."
+
+    telegram = LostTurnTests.telegram
+
+    async def test_marked_send_without_a_restart_goes_to_telegram_and_keeps_the_question(self):
+        sent = self.telegram()
+        ad = await self.start(gateway=HoldGateway())
+        await self.say(QUESTION)
+        (event,) = self.gateway.events
+        chat = event.source.chat_id
+        ad.gateway_runner = SimpleNamespace(_draining=True)
+        await ad.on_processing_complete(event, None)   # хода нет, вопрос в работе, перезапуска не было
+        await ad.send(chat, self.MARKED)
+        self.assertTrue(await hs.eventually(lambda: "Алиса:\n" + self.MARKED in sent))
+        self.assertIsNotNone(ad._engine.state.question)
+        self.assertIsNone(ad._engine.state.answer)
+
+    async def test_marked_send_after_a_restart_is_the_voice_answer(self):
+        first = await self.start(gateway=HoldGateway())
+        await self.say(QUESTION)
+        (event,) = self.gateway.events
+        chat = event.source.chat_id
+        await first.disconnect()
+        second = self.make()
+        self.assertTrue(await second.connect(is_reconnect=True))   # шлюз стартовал при вопросе в работе
+        self.addAsyncCleanup(second.disconnect)
+        second._drop_turn(chat)   # ответ из леджера приходит вне хода
+        await second.send(chat, self.MARKED)
+        self.assertEqual(await self.say("да", message=2), ("Текст рассылки.", False))
+
+
 class SendTests(AdapterCase):
     async def test_send_outside_turn_without_telegram_is_accepted_and_silent(self):
         ad = await self.start()

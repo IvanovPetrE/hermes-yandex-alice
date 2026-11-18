@@ -463,7 +463,47 @@ class LostTests(unittest.TestCase):
         self.assertEqual(acts, (d.Say(LOST),))
 
 
-TURN_LOST_TG = "Алиса:\nПрошлый ответ не пришёл."
+MARK = "♻️ Recovered reply — may be a duplicate:\n\n"
+
+
+def recovered(now=1100.0, conv=CONV, body="Солнечно."):
+    return d.Recovered(now=now, conversation=conv, text=body, raw=MARK + body)
+
+
+class RecoveredTests(unittest.TestCase):
+    """HERMESYAND-4: пометка — только форма; ответом она становится при вопросе в работе и перезапуске после него."""
+
+    def test_marked_send_without_a_restart_goes_to_telegram_and_keeps_the_question(self):
+        st, acts = d.step(later(), recovered(now=100.0))
+        self.assertEqual(acts, (d.Telegram(CONV, "Алиса:\n" + MARK + "Солнечно."),))
+        self.assertIsNotNone(st.question)
+        self.assertIsNone(st.answer)
+
+    def test_marked_send_without_a_question_goes_to_telegram(self):
+        st0 = d.State(conversation=CONV)
+        st, acts = d.step(st0, recovered())
+        self.assertEqual(acts, (d.Telegram(CONV, "Алиса:\n" + MARK + "Солнечно."),))
+        self.assertEqual(st, st0)
+
+    def test_marked_send_after_a_restart_is_the_answer_like_a_final(self):
+        got = d.step(restarted(), recovered())
+        want = d.step(restarted(), d.Final(now=1100.0, conversation=CONV, text="Солнечно.", internal=True))
+        self.assertEqual(got, want)
+        self.assertIsNone(got[0].question)
+        self.assertIsNotNone(got[0].answer)
+
+    def test_second_marked_send_after_the_answer_goes_to_telegram(self):
+        st, _ = d.step(restarted(), recovered())
+        _, acts = d.step(st, recovered(now=1101.0))
+        self.assertEqual(acts, (d.Telegram(CONV, "Алиса:\n" + MARK + "Солнечно."),))
+
+    def test_marked_send_of_another_conversation_goes_to_telegram(self):
+        st, acts = d.step(restarted(), recovered(conv=FRESH))
+        self.assertEqual(acts, (d.Telegram(FRESH, "Алиса:\n" + MARK + "Солнечно."),))
+        self.assertIsNotNone(st.question)
+
+
+TURN_LOST_TG ="Алиса:\nПрошлый ответ не пришёл."
 MIN15 = 900.0
 
 
