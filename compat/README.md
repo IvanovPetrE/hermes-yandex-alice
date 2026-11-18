@@ -13,6 +13,7 @@ HTTP в loopback-listener, агент — скриптованный LLM из `t
 | `P` | `validate_plugin_dir` манифеста, регистрация платформы (`source`, `display_tier`, `allowed_users_env`) |
 | `A` | текст, инструмент, пустой ответ модели и сбой провайдера → «не получилось», уведомление «📬» не озвучивается, порядок start → итог → complete |
 | `B` | вторая фраза в занятую беседу не доходит до Hermes, гейт Р2, хук `on_processing_complete` после итога |
+| `G` | гейт Р2 при пропаже `on_processing_complete`: итог без complete; потерянные итог и complete — ход снят тиком по сроку |
 | `H` | «повтори» из `state.db` профиля-цели маршрута (A2, симлинк): обычный ход, инструмент, `(empty)`, сбой провайдера, новый диалог, время чтения |
 | `N` | то же без маршрута (профиль по умолчанию) |
 | `Z` | «повтори» после сжатия беседы на месте |
@@ -29,13 +30,14 @@ HTTP в loopback-listener, агент — скриптованный LLM из `t
 (озвучивается). Штатная остановка опирается на приватный признак шлюза `GatewayRunner._draining` — его ловит
 `GroupR.test_graceful_stop_mid_turn_resumes_and_answers`.
 
-Не покрыто: гейт Р2 при пропаже `on_processing_complete`, исключения занятой сессии, леджер без пометки (`pending`),
-`interactive_resume=True` (для адаптера недостижим), настоящий Telegram и живая Алиса.
+Не покрыто: исключения занятой сессии (в том числе фраза после срока потерянного хода в ещё занятую сессию — ограничение в
+`docs/compatibility.md`), леджер без пометки (`pending`), `interactive_resume=True` (для адаптера недостижим), настоящий
+Telegram и живая Алиса.
 
 ## Запуск
 
 ```sh
-bash compat/run.sh <hermes-checkout> <hermes-python> <P|A|B|H|N|Z|L|R|T>
+bash compat/run.sh <hermes-checkout> <hermes-python> <P|A|B|G|H|N|Z|L|R|T>
 ```
 
 - `<hermes-checkout>` — git checkout Hermes на ревизии из `docs/compatibility.md`.
@@ -44,7 +46,7 @@ bash compat/run.sh <hermes-checkout> <hermes-python> <P|A|B|H|N|Z|L|R|T>
   не годится: при временном `HERMES_HOME` он не находит закоммиченное окружение). В CI — `python` из `uv sync`.
 - Скрипт сам создаёт временный каталог `hya-compat-*` (HOME, `HERMES_HOME`, блокировки), запускает под `env -i`, `timeout`, `nice`,
   `choom` (при нехватке памяти ядро убьёт прогон, а не живой шлюз) и удаляет каталог при выходе. Настоящий `HERMES_HOME` не
-  используется. Каждая группа — отдельный процесс: пиковый RSS ~100 МБ (P) и ~250–290 МБ (остальные); время: P 5 с, N, Z, T
+  используется. Каждая группа — отдельный процесс: пиковый RSS ~100 МБ (P) и ~250–290 МБ (остальные); время: P 5 с, G, N, Z, T
   15–40 с, A, H, R ~1–1,5 мин, L ~2,5 мин (в нём ожидание повторной попытки шлюза).
 - Пропущенный тест или ноль запущенных — выход 1. Без checkout или с неверным python — выход 2.
 - Каталог лежит вне `tests/`, поэтому `python -m unittest discover -s tests` его не собирает.
