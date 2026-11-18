@@ -334,6 +334,46 @@ async def sc_ledger(w) -> None:
     w.state["repeat"] = await w.say("повтори", intents=(REPEAT,))
 
 
+OWNER_TG, CHAT = 5001, "5001"   # синтетические: владелец и его личный чат (как в группе T)
+
+
+def tg_kwargs(standin) -> dict:
+    """Настройки сцены с Telegram: поддельный Bot API `TelegramStandin` вместо настоящего (как в `test_compat_approval`)."""
+    return dict(
+        platform_lines=R_PLATFORM,
+        config_extra=("  telegram:\n    enabled: true\n    extra:\n"   # продолжает раздел `platforms:` из World.prepare
+                      f"      base_url: {standin.api_base}\n      base_file_url: {standin.file_base}\n" + R_CONFIG),
+        env_extra=(f"TELEGRAM_BOT_TOKEN={standin.token}\nTELEGRAM_ALLOWED_USERS={OWNER_TG}\n"
+                   "HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=1\nHERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS=0\n"
+                   f"ALICE_TELEGRAM_CHAT={CHAT}\nALICE_TELEGRAM_OWNER_ID={OWNER_TG}\n"))
+
+
+async def sc_pending(w) -> None:
+    """SIGKILL между записями леджера `pending` и `attempting` (HERMESYAND-8): Hermes после старта досылает строку без
+    пометки «♻️», отправкой вне хода и без автопродолжения. Адаптер не отличает её от прочих отправок вне хода (S6):
+    текст уходит в Telegram с подписью, голосом не звучит, вопрос остаётся в работе."""
+    f = _fakes()
+    standin = w.state["standin"]
+    w.script.add("r08", f.Text("Ответ r08."))
+    (w.home / "hold_pending").write_text("1", encoding="utf-8")
+    first = await w.start()
+    w.voice["r08"] = [await w.say("вопрос [r08] запись зависнет")]
+    held = await w.wait_op(lambda op: op.op == "held_pending", 60.0)
+    w.state["held"] = held is not None
+    await w.kill(first)
+    (w.home / "hold_pending").unlink()
+    mark = len(w.journal)
+    second = await w.start()
+    w.state["redelivered"] = await w.wait_op(
+        lambda op: op.op == "send" and op.pid == second.pid and "r08" in op.content, 60.0, mark)
+    w.state["telegram"] = await poll(
+        lambda: [v.text for v in standin.visible(CHAT) if "Ответ r08." in v.text], 30.0)
+    for _ in range(3):   # голосом ответа нет: вопрос в работе, «да» только продлевает ожидание
+        w.voice["r08"].append(await w.say("да", confirm=True))
+    w.state["sends"] = [op for op in w.journal if op.op == "send" and op.pid == second.pid and "r08" in op.content]
+    w.state["llm_seen"] = list(w.script.seen)
+
+
 async def sc_new_phrase(w) -> None:
     """Новая фраза владельца, пока дозапущенный ход идёт: до Hermes не доходит, ответ один."""
     first, second = await mid_turn_restart(w, "kill", "r05", hold_resume=True)
@@ -358,6 +398,19 @@ class GroupR(_Group):
         cls.ledger_w = cls.run_scene("r_ledger", sc_ledger, **kw)
         cls.phrase_w = cls.run_scene("r_phrase", sc_new_phrase, **kw)
         cls.idle_w = cls.run_scene("r_idle", sc_idle_restart, **kw)
+        from tests.fakes.platforms.telegram_standin import TelegramStandin
+
+        standin = TelegramStandin()
+        standin.start()
+        try:
+            cls.pending_w = RestartWorld("r_pending", **tg_kwargs(standin))
+            cls.pending_w.state["standin"] = standin
+            cls.pending_w.run([("r_pending", sc_pending)])
+        finally:
+            print(f"\n=== r_pending: errors={cls.pending_w.errors} voice={cls.pending_w.voice} state="
+                  f"{ {k: v for k, v in cls.pending_w.state.items() if k != 'standin'} }")
+            print(standin.describe())
+            standin.stop()
 
     def check_resume(self, w, name: str, token: str) -> None:
         self.scenario_ok(w, name)
@@ -406,6 +459,20 @@ class GroupR(_Group):
         self.assertEqual(len(st["sends"]), 1, "ответ досла́н ровно один раз")
         self.assertNotIn("resume", st["llm_seen"], "автопродолжения при досылке из леджера быть не должно")
         self.assertEqual(st["repeat"], "Ответ r03.", "итог записан в историю до отправки")
+
+    def test_ledger_pending_row_is_redelivered_plainly_to_telegram_not_voiced(self) -> None:
+        w = self.pending_w
+        self.scenario_ok(w, "r_pending")
+        st = w.state
+        self.assertTrue(st["held"], "запись леджера не зависла: сцена ничего не доказывает")
+        self.assertIsNotNone(st["redelivered"], "леджер не досла́л строку pending")
+        self.assertNotIn("♻", st["redelivered"].content, "строка pending должна идти без пометки")
+        self.assertIsNone(st["redelivered"].reply_to)   # вне хода
+        self.assertEqual(len(st["sends"]), 1, "ответ досла́н ровно один раз")
+        self.assertNotIn("resume", st["llm_seen"], "автопродолжения при досылке из леджера быть не должно")
+        self.assertEqual(st["telegram"], ["Алиса:\nОтвет r08."], "досылка должна уйти в Telegram с подписью")
+        spoken = " ".join(w.voice["r08"])
+        self.assertNotIn("Ответ r08.", spoken, "досылка без пометки не должна звучать ответом")
 
     def test_idle_restart_keeps_the_conversation_and_the_session(self) -> None:
         w = self.idle_w

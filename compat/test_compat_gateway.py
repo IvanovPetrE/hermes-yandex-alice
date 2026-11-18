@@ -126,6 +126,38 @@ async def sc_lost_turn(w) -> None:
     await w.ask("lost2", "сорок третий [t43] вопрос")
 
 
+LATE_FINAL = "Поздний сорок четвёртый."
+OWNER_TG, CHAT = 5001, "5001"   # синтетические: владелец и его личный чат
+
+
+async def sc_busy_after_lost(w) -> None:
+    """Срок потерянного хода вышел (complete заглушён), но Hermes ещё занят ходом: новая фраза уходит в занятую сессию
+    (HERMESYAND-8). Известное ограничение — тест закрепляет текущую привязку, а не желаемую."""
+    import dataclasses
+
+    mute_complete(w, "[t44]")
+    engine = w.adapter._engine
+    engine.settings = dataclasses.replace(engine.settings, turn_lost_after=5.0)   # больше бюджета ответа 3,5 с
+    w.script.add("t44", _fakes().Hang(15.0), _fakes().Text(LATE_FINAL))
+    w.script.add("t45", _fakes().Text("Ответ сорок пятый."))
+    loop = asyncio.get_running_loop()
+    asked = loop.time()
+    w.voice.setdefault("busy1", []).append(await w.say("сорок четвёртый [t44] вопрос"))
+    await w.wait_seen("t44")
+    w.state["open_before_tick"] = sorted(w.adapter._open)
+    await asyncio.sleep(max(0.0, asked + 6.0 - loop.time()))   # срок вышел, Hermes ещё висит (Hang 15 с)
+    w.adapter._engine.tick()
+    w.state["open_after_tick"] = sorted(w.adapter._open)
+    w.state["second_at"] = len(w.journal)
+    await w.ask("busy2", "сорок пятый [t45] вопрос")
+    end = loop.time() + 40.0   # оба текста должны дойти до send(): позднего итога t44 и ответа на t45
+    while loop.time() < end:
+        sent = " ".join(op.content for op in w.journal if op.op == "send")
+        if LATE_FINAL in sent and "Ответ сорок пятый." in sent:
+            break
+        await asyncio.sleep(0.2)
+
+
 class _Group(unittest.TestCase):
     CONFIG = ""
     SCENARIOS: list = []
@@ -251,6 +283,72 @@ class GroupG(_Group):
         self.assertEqual(self.world.voice["lost2"][-1], "Ответ сорок третий.")
         spoken = " ".join(s for lines in self.world.voice.values() for s in lines)
         self.assertNotIn("Не получилось", spoken)
+
+
+class _BusyGroup(unittest.TestCase):
+    """Фраза в занятую сессию после срока потерянного хода (HERMESYAND-8): известное ограничение, не желаемая привязка.
+    Telegram — `TelegramStandin`: видно, что и в каком виде ушло владельцу."""
+
+    BUSY_MODE = ""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from tests.fakes.platforms.telegram_standin import TelegramStandin
+
+        cls.standin = TelegramStandin()
+        cls.standin.start()
+        try:
+            cls.world = harness.World(
+                "  telegram:\n    enabled: true\n    extra:\n"   # продолжает раздел `platforms:` из World.prepare
+                f"      base_url: {cls.standin.api_base}\n      base_file_url: {cls.standin.file_base}\n"
+                f"display:\n  busy_input_mode: {cls.BUSY_MODE}\n",
+                env_extra=(f"TELEGRAM_BOT_TOKEN={cls.standin.token}\nTELEGRAM_ALLOWED_USERS={OWNER_TG}\n"
+                           "HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=1\nHERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS=0\n"
+                           f"ALICE_TELEGRAM_CHAT={CHAT}\nALICE_TELEGRAM_OWNER_ID={OWNER_TG}\n"))
+            cls.world.run([("busy_after_lost", sc_busy_after_lost)])
+            cls.telegram = [v.text for v in cls.standin.visible(CHAT)]
+        finally:
+            cls.standin.stop()
+        w = cls.world
+        print(f"\n=== {cls.BUSY_MODE}: errors={w.errors} voice={w.voice}\n    state={w.state}\n    telegram={cls.telegram}")
+        for op in w.journal:
+            print(f"    {op.t:9.2f} {op.op:8} mid={op.mid} reply_to={op.reply_to} meta={op.metadata} {op.content[:70]!r}")
+
+    def _mids(self, token: str) -> list:
+        return [op.mid for op in self.world.journal if op.op == "ask" and token in op.content]
+
+    def check_common(self) -> None:
+        self.assertNotIn("busy_after_lost", self.world.errors, self.world.errors.get("busy_after_lost"))
+        (mid,) = self._mids("[t44]")
+        self.assertIn(mid, self.world.state["muted"], "complete хода t44 не был заглушён: сцена ничего не доказывает")
+        self.assertEqual(len(self.world.state["open_before_tick"]), 1, "до тика хода не было: проверка была бы пустой")
+        self.assertEqual(self.world.state["open_after_tick"], [], "тик не снял запись хода в адаптере")
+        self.assertEqual(len(self._mids("[t45]")), 1, "фраза после срока не дошла до Hermes")
+        self.assertIn(LATE_FINAL, " ".join(op.content for op in self.world.journal if op.op == "send"),
+                      "поздний итог t44 не дошёл до адаптера: сцена ничего не доказывает")
+
+
+class GroupQ(_BusyGroup):
+    """Фраза в занятую сессию, `busy_input_mode: queue` (худший случай из S1). Известное ограничение: Hermes обрабатывает
+    фразу отдельным ходом, но `on_processing_complete` приходит раньше итога, а итог — с `reply_to` прошлого хода."""
+
+    BUSY_MODE = "queue"
+
+    def test_second_phrase_reaches_hermes_and_the_late_final_goes_to_telegram_not_voice(self) -> None:
+        self.check_common()
+        spoken = " ".join(s for lines in self.world.voice.values() for s in lines)
+        self.assertNotIn(LATE_FINAL, spoken, "поздний итог прошлого хода не должен звучать")
+        self.assertIn("Алиса:\n" + LATE_FINAL, self.telegram, "поздний итог не пришёл в Telegram")
+
+
+class GroupI(_BusyGroup):
+    """То же при `busy_input_mode: interrupt`. Утверждения уточняются по первому прогону на сервере (в S1 для этого
+    режима: «↪ Redirected…» с `reply_to` второй фразы, хуки только у первой)."""
+
+    BUSY_MODE = "interrupt"
+
+    def test_second_phrase_reaches_hermes(self) -> None:
+        self.check_common()
 
 
 if __name__ == "__main__":

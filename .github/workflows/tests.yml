@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: ["P", "A", "B", "G", "H", "N", "Z", "L", "R", "T"]
+        group: ["P", "A", "B", "G", "Q", "I", "H", "N", "Z", "L", "R", "T"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4

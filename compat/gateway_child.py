@@ -76,6 +76,23 @@ async def main(checkout: str) -> None:
             return await orig(chat_id, content, reply_to, metadata)
         adapter.send = send
 
+    def hold_pending() -> None:
+        """Пока есть флаг `hold_pending`, итоговая запись леджера зависает между `pending` и `attempting` (до SIGKILL
+        родителем): в БД остаётся строка `pending` — Hermes досылает её без пометки (HERMESYAND-8). Естественным сбоем
+        это окно не поймать: оно — один `to_thread` между двумя записями."""
+        import gateway.delivery_ledger as ledger
+
+        orig = ledger.mark_attempting
+        flag = home / "hold_pending"
+
+        def mark_attempting(obligation_id):
+            if flag.exists():
+                journal.append(harness.Op(time.monotonic(), "held_pending", "", content=str(obligation_id)))
+                time.sleep(3600)
+            return orig(obligation_id)
+        ledger.mark_attempting = mark_attempting
+
+    hold_pending()
     seen = {"id": None}
 
     def attach() -> None:
