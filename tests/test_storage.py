@@ -48,6 +48,24 @@ class DecodeTests(unittest.TestCase):
                 self.assertIsNone(storage.decode(text))
 
 
+class AliveAtTests(unittest.TestCase):
+    """HERMESYAND-3: признак жизни хода — в снимке; снимок прежней выкладки (без поля) читается, а не обнуляется."""
+
+    def test_alive_at_survives_a_round_trip(self) -> None:
+        state = dataclasses.replace(FULL, question=dataclasses.replace(FULL.question, alive_at=180.25))
+        self.assertEqual(storage.decode(storage.encode(state)), state)
+
+    def test_a_snapshot_without_alive_at_is_read_with_none(self) -> None:
+        old = _good()
+        del old["state"]["question"]["alive_at"]
+        self.assertEqual(storage.decode(json.dumps(old)), FULL)
+
+    def test_alive_at_of_a_wrong_type_discards_the_snapshot(self) -> None:
+        bad = _good()
+        bad["state"]["question"]["alive_at"] = "180"
+        self.assertIsNone(storage.decode(json.dumps(bad)))
+
+
 class SchemaTests(unittest.TestCase):
     def test_schema_lists_every_field_of_the_dialog_state(self) -> None:
         for cls, schema in ((d.State, storage.STATE_FIELDS), (d.Question, storage.QUESTION_FIELDS),

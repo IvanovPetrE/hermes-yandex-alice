@@ -212,7 +212,7 @@ class AliceAdapter(BasePlatformAdapter):
         self._engine = engine.Engine(dialog.Settings(telegram=telegram), self._ask, self._recall,
                                      new_id=lambda: "alice-" + uuid.uuid4().hex[:12], state=loaded,
                                      save=self._store.save if self._store is not None else None,
-                                     telegram=self._courier.enqueue if telegram else None)
+                                     telegram=self._courier.enqueue if telegram else None, drop=self._drop_turn)
 
         from aiohttp import web
 
@@ -418,16 +418,21 @@ class AliceAdapter(BasePlatformAdapter):
             logger.debug("send: full command block refused, length=%d", len(text))
             return SendResult(success=False, error="full command is not shown to the owner")
         turn = self._open.get(chat)
+        reply = None if reply_to is None else str(reply_to)
         kind = sends.classify_send(open_turn=turn is not None, turn_mid=turn[0] if turn else None,
-                                   reply_to=None if reply_to is None else str(reply_to), notify=meta.get("notify"),
+                                   reply_to=reply, notify=meta.get("notify"),
                                    interim=bool(meta.get("_interim_send")), text=text,
-                                   approval_prompt=bool(meta.get("is_approval_prompt")))
+                                   approval_prompt=bool(meta.get("is_approval_prompt")),
+                                   late=self._engine is not None and self._engine.lost(reply))
         if self._engine is not None:
+            if turn is not None:   # признак жизни открытого хода (HERMESYAND-3)
+                self._engine.on_send(chat)
             if kind == sends.FINAL:   # метка хода: карточка не дошла / подтверждения не настроены — своя озвучка
                 self._engine.on_final(chat, text, turn[1], card=self._appr.outcome(chat))
             elif kind == sends.RECOVERED:   # ответ из леджера Hermes после перезапуска: пометка срезается по форме (S5)
                 self._engine.on_final(chat, sends.strip_marker(text), True)
-            else:   # вне хода (cron в голос, фон) — в Telegram «Алиса:»; служебное и неитоговое внутри хода — нет (S6)
+            else:   # вне хода (cron в голос, фон) и поздний итог снятого хода — в Telegram «Алиса:»; служебное и
+                # неитоговое внутри хода — нет (S6)
                 forwarded = sends.forward_text(open_turn=turn is not None, kind=kind, text=text)
                 if forwarded:
                     self._engine.forward(chat, forwarded)
@@ -441,6 +446,10 @@ class AliceAdapter(BasePlatformAdapter):
         self._appr.start_turn(chat)
         if self._engine is not None:
             self._engine.on_turn_start(chat, event.message_id, internal)
+
+    def _drop_turn(self, chat: str) -> None:
+        """Движок снял ход без complete (по сроку или после итога, HERMESYAND-3): отправки больше не считаются ходовыми."""
+        self._open.pop(chat, None)
 
     def _shutting_down(self) -> bool:
         """Шлюз останавливается или перезапускается (`GatewayRunner._draining`, `run_shutdown.py`; закреплено тестом

@@ -52,6 +52,22 @@ class MarkerTests(unittest.TestCase):
         self.assertEqual(s.split_marker("Ответ"), ("", "Ответ"))
 
 
+class LateTests(unittest.TestCase):
+    """HERMESYAND-3: итог хода, снятого без complete, приходит поздно — только в Telegram с подписью, и при новом ходе."""
+
+    def test_a_final_of_a_dropped_turn_is_late_even_while_a_new_turn_is_open(self):
+        self.assertEqual(kind(turn_mid="m2", reply_to="m1", late=True), s.LATE)
+        self.assertEqual(kind(open_turn=False, turn_mid=None, reply_to="m1", late=True), s.LATE)
+
+    def test_only_final_shaped_sends_are_late(self):
+        self.assertEqual(kind(turn_mid="m2", reply_to="m1", late=True, notify=None), s.OUTSIDE)
+        self.assertEqual(kind(turn_mid="m2", reply_to="m1", late=True, interim=True), s.INTERIM)
+
+    def test_late_text_goes_to_telegram_whole_with_the_label(self):
+        self.assertEqual(s.forward_text(open_turn=True, kind=s.LATE, text="ГОЛОС: Солнечно."), "Алиса:\nСолнечно.")
+        self.assertIsNone(s.forward_text(open_turn=True, kind=s.LATE, text="  "))
+
+
 class ClassifyTests(unittest.TestCase):
     def test_final_is_the_s1_rule(self):
         self.assertEqual(kind(), s.FINAL)

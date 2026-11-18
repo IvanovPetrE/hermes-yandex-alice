@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from typing import Awaitable, Callable
 
 try:
@@ -36,8 +37,10 @@ class Engine:
                  wall: Callable[[], float] = time.time, budget: float = 3.5, recall_timeout: float = 1.5,
                  gate_timeout: float = 3.0, log: Callable[[str], None] | None = None, state: d.State | None = None,
                  save: Callable[[d.State], None] | None = None,
-                 telegram: Callable[[str, str, tuple[str, ...]], None] | None = None):
+                 telegram: Callable[[str, str, tuple[str, ...]], None] | None = None,
+                 drop: Callable[[str], None] | None = None):
         self.settings, self._ask, self._recall, self._new_id = settings, ask, recall, new_id
+        self._drop = drop   # адаптер снимает свою запись об открытом ходе (HERMESYAND-3)
         self._wall, self._budget, self._recall_timeout, self._gate_timeout = wall, budget, recall_timeout, gate_timeout
         self._log = log or logger.warning
         self._save, self._save_failed = save, False
@@ -49,6 +52,7 @@ class Engine:
         self._closed = False
         self._reading: asyncio.Future | None = None  # идущее чтение истории
         self._finals: set[str] = set()               # беседы, где в текущем ходе уже был итог
+        self._lost: deque[str] = deque(maxlen=32)    # message_id ходов, снятых без complete: их поздние события
 
     # --- запросы Алисы -------------------------------------------------------------------------------------------
 
@@ -112,12 +116,24 @@ class Engine:
         self._finals.discard(conversation)
         if internal:   # Hermes дозапустил ход после перезапуска (S5): вопрос не потерян
             self._apply(d.InternalStarted(now=self._wall(), conversation=conversation))
+        self._apply(d.TurnAlive(now=self._wall(), conversation=conversation))
+
+    def on_send(self, conversation: str) -> None:
+        """Отправка шлюза в открытом ходе беседы — признак жизни: срок потерянного хода идёт заново (HERMESYAND-3)."""
+        if conversation in self._open:
+            self._apply(d.TurnAlive(now=self._wall(), conversation=conversation))
+
+    def lost(self, mid: str | None) -> bool:
+        """Ход `mid` снят без complete (по сроку или после итога): его поздний итог — в Telegram, а не голосом."""
+        return mid is not None and mid in self._lost
 
     def on_turn_complete(self, conversation: str, mid: str | None, internal: bool, interrupted: bool = False) -> None:
         """`interrupted` — шлюз останавливается: ход закончен без итога остановкой, а не сбоем. Hermes дозапустит его после
         старта (S5, compat группа R), поэтому вопрос не закрывается — как при SIGKILL, когда хука нет."""
         turn = self._open.get(conversation)
         if turn is not None and turn[0] != mid:   # запоздалое завершение прошлого хода: новый ход идёт, гейт не трогаем
+            return
+        if turn is None and self.lost(mid):   # поздний complete снятого хода: вопрос в работе — уже другой
             return
         self._open.pop(conversation, None)
         if turn is not None:
@@ -165,6 +181,8 @@ class Engine:
                         fut.set_result(act.text)
             elif isinstance(act, d.Hold):
                 hold = True
+            elif isinstance(act, d.DropTurn):   # до Ask того же шага: фраза не ждёт гейта потерянного хода
+                self._drop_turn(act.conversation)
             elif isinstance(act, d.Ask):
                 self._spawn(self._do_ask(act.conversation, act.text))
             elif isinstance(act, d.Telegram):
@@ -211,13 +229,35 @@ class Engine:
             self._log(f"recall failed: {type(exc).__name__}")
         self._apply(d.Recalled(now=self._wall(), text=text, outcome=outcome))
 
+    def _drop_turn(self, conversation: str) -> None:
+        """Снять записи об открытом ходе без complete (HERMESYAND-3) — здесь и в адаптере; ждущий гейт просыпается,
+        поздние complete и итог хода узнаются по `_lost`."""
+        turn = self._open.pop(conversation, None)
+        self._finals.discard(conversation)
+        if turn is not None:
+            turn[1].set()
+            if turn[0] is not None:
+                self._lost.append(turn[0])
+        if self._drop is not None:
+            try:
+                self._drop(conversation)
+            except Exception as exc:  # noqa: BLE001
+                self._log(f"turn drop failed: {type(exc).__name__}")
+
     async def _do_ask(self, conversation: str, text: str) -> None:
         """Гейт Р2: фраза уходит шлюзу, только когда в беседе нет открытого хода Hermes. Не вышло — вопрос закрывается
-        (`step` уже записал его в состояние), ответ владельцу — «не получилось»; в лог — класс ошибки, без текста."""
+        (`step` уже записал его в состояние), ответ владельцу — «не получилось»; в лог — класс ошибки, без текста.
+        Итог хода уже был, а complete за срок гейта не пришёл — ход считается закрытым (HERMESYAND-3, решение владельца)."""
         try:
             turn = self._open.get(conversation)
             if turn is not None:
-                await asyncio.wait_for(turn[1].wait(), self._gate_timeout)
+                try:
+                    await asyncio.wait_for(turn[1].wait(), self._gate_timeout)
+                except asyncio.TimeoutError:
+                    if conversation not in self._finals or self._open.get(conversation) is not turn:
+                        raise
+                    self._log("turn closed without complete")
+                    self._drop_turn(conversation)
             await self._ask(conversation, text)
         except Exception as exc:  # noqa: BLE001 - включая TimeoutError гейта; ни одна ошибка не должна оставить вопрос в работе
             self._log(f"ask failed: {type(exc).__name__}")

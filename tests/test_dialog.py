@@ -463,6 +463,81 @@ class LostTests(unittest.TestCase):
         self.assertEqual(acts, (d.Say(LOST),))
 
 
+TURN_LOST_TG = "Алиса:\nПрошлый ответ не пришёл."
+MIN15 = 900.0
+
+
+def started():
+    """Вопрос в работе («спросите позже»), шлюз начал его ход в 95 с (on_processing_start)."""
+    st, acts = d.step(later(), d.TurnAlive(now=95.0, conversation=CONV))
+    assert acts == (), acts
+    return st
+
+
+class LostTurnTests(unittest.TestCase):
+    """HERMESYAND-3: ход без on_processing_complete, без итога и без отправок старше 15 минут — потерян, закрывается тихо."""
+
+    def test_the_question_is_closed_quietly_fifteen_minutes_after_the_turn_started(self):
+        st, acts = d.step(started(), d.Tick(now=95.0 + MIN15 - 1))
+        self.assertEqual((acts, st.question is not None), ((), True))
+        st, acts = d.step(started(), d.Tick(now=95.0 + MIN15))
+        self.assertEqual(acts, (d.DropTurn(CONV), d.Telegram(CONV, TURN_LOST_TG)))
+        self.assertIsNone(st.question)
+        self.assertEqual((st.announce, st.prompt, st.wait_round), ("", d.IDLE, 0))   # без озвучки
+
+    def test_a_question_whose_turn_never_started_has_no_deadline(self):
+        st, acts = d.step(later(), d.Tick(now=90.0 + 2 * HOUR))
+        self.assertEqual((acts, st.question is not None), ((), True))
+
+    def test_any_sign_of_life_moves_the_deadline(self):
+        st, _ = d.step(started(), d.TurnAlive(now=500.0, conversation=CONV))
+        st, acts = d.step(st, d.Tick(now=500.0 + MIN15 - 1))
+        self.assertEqual(acts, ())
+        _, acts = d.step(st, d.Tick(now=500.0 + MIN15))
+        self.assertEqual(acts[0], d.DropTurn(CONV))
+
+    def test_the_clock_stands_while_the_turn_waits_for_approval(self):
+        st, _ = d.step(started(), d.Approval(now=100.0, conversation=CONV, waiting=True))
+        st, acts = d.step(st, d.Tick(now=95.0 + 2 * HOUR))
+        self.assertEqual((acts, st.question is not None), ((), True))
+        st, _ = d.step(st, d.Approval(now=8000.0, conversation=CONV, waiting=False))   # нажали: отсчёт — заново
+        st, acts = d.step(st, d.Tick(now=8000.0 + MIN15 - 1))
+        self.assertEqual(acts, ())
+        _, acts = d.step(st, d.Tick(now=8000.0 + MIN15))
+        self.assertEqual(acts[0], d.DropTurn(CONV))
+
+    def test_approval_end_does_not_start_a_clock_for_a_turn_that_never_started(self):
+        st, _ = d.step(later(), d.Approval(now=100.0, conversation=CONV, waiting=False))
+        _, acts = d.step(st, d.Tick(now=100.0 + MIN15))
+        self.assertEqual(acts, ())
+
+    def test_after_a_gateway_start_d9_rules_and_this_deadline_does_not(self):
+        st, _ = d.step(started(), d.GatewayStarted(now=200.0))
+        st, acts = d.step(st, d.Tick(now=95.0 + MIN15))
+        self.assertEqual(acts, ())
+        self.assertEqual(st.announce, LOST)   # Д9: 10 минут после старта
+
+    def test_without_telegram_only_the_turn_is_dropped(self):
+        st, acts = d.step(started(), d.Tick(now=95.0 + MIN15), d.Settings(telegram=False))
+        self.assertEqual(acts, (d.DropTurn(CONV),))
+        self.assertIsNone(st.question)
+
+    def test_a_phrase_after_the_deadline_drops_the_turn_and_goes_to_the_agent(self):
+        st, acts = d.step(started(), utter("а завтра?", now=95.0 + MIN15, turn="s1-9"))
+        self.assertEqual(acts, (d.DropTurn(CONV), d.Telegram(CONV, TURN_LOST_TG), d.Ask(CONV, "а завтра?"), d.Hold()))
+        self.assertIsNotNone(st.question)
+
+    def test_a_phrase_after_the_deadline_on_wait_also_goes_to_the_agent(self):
+        st, _ = d.step(waiting(), d.TurnAlive(now=95.0, conversation=CONV))
+        _, acts = d.step(st, utter("а завтра?", now=95.0 + MIN15, turn="s1-9"))
+        self.assertEqual(acts[2:], (d.Ask(CONV, "а завтра?"), d.Hold()))
+
+    def test_sign_of_life_of_another_conversation_is_ignored(self):
+        st, _ = d.step(started(), d.TurnAlive(now=500.0, conversation="old-conv"))
+        _, acts = d.step(st, d.Tick(now=95.0 + MIN15))
+        self.assertEqual(acts[0], d.DropTurn(CONV))
+
+
 TG_FAILED = "Не смогла отправить в Телеграм. Озвучить?"
 SENT = "Алиса:\nСолнечно."
 

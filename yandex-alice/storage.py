@@ -30,7 +30,9 @@ _OUTBOX = ("CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREM
 STR, FLOAT, INT, BOOL, TEXTS, FLOATS = "str", "float", "int", "bool", "texts", "floats"
 OPT_FLOAT = "float?"
 QUESTION_FIELDS = {"asked_at": FLOAT, "approval": BOOL, "to_telegram": BOOL, "restarted_at": OPT_FLOAT,
-                   "internal_seen": BOOL}
+                   "internal_seen": BOOL, "alive_at": OPT_FLOAT}
+# Поля, добавленные без смены VERSION: в снимке прежней выкладки их нет — читаются как None (HERMESYAND-3).
+_ADDED = frozenset({"alive_at"})
 ANSWER_FIELDS = {"parts": TEXTS, "telegram": STR, "whole": STR, "ready_at": FLOAT, "undelivered": BOOL,
                  "offered": BOOL}
 STATE_FIELDS = {"conversation": STR, "question": QUESTION_FIELDS, "answer": ANSWER_FIELDS, "holding": STR,
@@ -72,11 +74,11 @@ def _value(kind, raw):
 
 
 def _record(cls, fields: dict, raw):
-    if not isinstance(raw, dict) or set(raw) != set(fields):
+    if not isinstance(raw, dict) or not set(fields) - _ADDED <= set(raw) <= set(fields):
         raise _Bad
     values = {}
     for name, kind in fields.items():
-        item = raw[name]
+        item = raw.get(name)   # нет ключа — только у полей из _ADDED, их тип допускает None
         if isinstance(kind, dict):
             values[name] = None if item is None else _record(d.Question if kind is QUESTION_FIELDS else d.Answer,
                                                              kind, item)

@@ -350,6 +350,99 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(h.asks, [])
         self.assertIsNone(h.engine.state.question)
 
+    async def test_a_turn_without_complete_stops_blocking_after_the_deadline(self) -> None:
+        """HERMESYAND-3: шлюз не вызвал on_processing_complete и итога нет — через срок ход потерян, фраза идёт агенту."""
+        h = Harness(budget=0.05, gate_timeout=0.05)
+        self.assertEqual(await h.engine.handle(rq("первый", mid="1")), p.REPLY_ACCEPTED)
+        h.engine.on_turn_start(h.conv, "m1", False)   # complete и итога не будет
+        h.clock += 901   # срок потерянного хода — 15 минут (Settings.turn_lost_after = 900)
+        h.engine.tick()
+        task = asyncio.create_task(h.engine.handle(rq("второй", mid="2")))
+        await settle()
+        self.assertEqual(h.asks[-1:], [(h.conv, "второй")])
+        h.engine.on_final(h.conv, "Ответ", False)
+        self.assertEqual(await task, "Ответ")
+
+    async def test_a_turn_with_a_final_but_no_complete_does_not_block(self) -> None:
+        """HERMESYAND-3: итог был, complete не пришёл — следующая фраза уходит агенту, а не падает на гейте."""
+        h = Harness(budget=1.0, gate_timeout=0.05)
+        first = asyncio.create_task(h.engine.handle(rq("первый", mid="1")))
+        await settle()
+        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_final(h.conv, "Ответ первый", False)
+        self.assertEqual(await first, "Ответ первый")   # on_turn_complete не вызываем
+        task = asyncio.create_task(h.engine.handle(rq("второй", mid="2")))
+        await asyncio.sleep(0.2)
+        self.assertEqual(h.asks[-1:], [(h.conv, "второй")])
+        h.engine.on_final(h.conv, "Ответ второй", False)
+        self.assertEqual(await task, "Ответ второй")
+
+    async def test_a_lost_turn_is_dropped_in_the_adapter_too_and_wakes_a_waiting_gate(self) -> None:
+        dropped = []
+        h = Harness(budget=0.05, gate_timeout=5.0, drop=dropped.append)
+        await h.engine.handle(rq("первый", mid="1"))
+        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_final(h.conv, "Ответ первый", False)   # итог есть — вопрос закрыт, ход не закрыт
+        task = asyncio.create_task(h.engine.handle(rq("скинь ответ", mid="2",
+                                                      nlu={"intents": {"hya.answer.get": {}}})))
+        self.assertEqual(await task, "Ответ первый")
+        gated = asyncio.create_task(h.engine.handle(rq("второй", mid="3")))
+        await settle()
+        self.assertEqual(h.asks[-1:], [(h.conv, "первый")])   # ждёт гейта (5 с)
+        h.engine._drop_turn(h.conv)
+        await settle()
+        self.assertEqual(h.asks[-1:], [(h.conv, "второй")])
+        self.assertEqual(dropped, [h.conv])
+        h.engine.on_final(h.conv, "Ответ второй", False)
+        self.assertEqual(await gated, "Ответ второй")
+
+    async def test_the_deadline_drops_the_turn_in_the_adapter(self) -> None:
+        dropped = []
+        h = Harness(budget=0.05, drop=dropped.append)
+        await h.engine.handle(rq("первый", mid="1"))
+        h.engine.on_turn_start(h.conv, "m1", False)
+        h.clock += 901
+        h.engine.tick()
+        self.assertEqual(dropped, [h.conv])
+        self.assertIsNone(h.engine.state.question)
+        self.assertTrue(h.engine.lost("m1"))
+
+    async def test_without_a_final_and_before_the_deadline_the_gate_still_fails(self) -> None:
+        h = Harness(budget=0.05, gate_timeout=0.05)
+        await h.engine.handle(rq("первый", mid="1"))
+        h.engine.on_turn_start(h.conv, "m1", False)
+        h.clock += 899
+        h.engine.tick()
+        self.assertEqual(await h.engine.handle(rq("нет", mid="2", nlu={"intents": {"YANDEX.REJECT": {}}})),
+                         "Хорошо, спросите ответ позже.")
+        self.assertEqual(await h.engine.handle(rq("второй", mid="3")),
+                         "Начать новый диалог или продолжить прошлый?")   # вопрос ещё в работе
+        self.assertFalse(h.engine.lost("m1"))
+
+    async def test_a_late_complete_of_a_dropped_turn_does_not_close_the_new_question(self) -> None:
+        h = Harness(budget=0.05, gate_timeout=0.05)
+        await h.engine.handle(rq("первый", mid="1"))
+        h.engine.on_turn_start(h.conv, "m1", False)
+        h.clock += 901
+        h.engine.tick()
+        self.assertEqual(await h.engine.handle(rq("второй", mid="2")), p.REPLY_ACCEPTED)
+        h.engine.on_turn_complete(h.conv, "m1", False)   # поздний complete снятого хода; новый ход ещё не стартовал
+        self.assertIsNotNone(h.engine.state.question)
+        self.assertEqual(h.engine.state.announce, "")
+
+    async def test_a_send_in_the_open_turn_moves_the_deadline(self) -> None:
+        h = Harness(budget=0.05)
+        await h.engine.handle(rq("первый", mid="1"))
+        h.engine.on_turn_start(h.conv, "m1", False)
+        h.clock += 600
+        h.engine.on_send(h.conv)
+        h.clock += 600
+        h.engine.tick()
+        self.assertIsNotNone(h.engine.state.question)
+        h.clock += 300
+        h.engine.tick()
+        self.assertIsNone(h.engine.state.question)
+
     async def test_a_failing_ask_fails_the_question_and_logs_only_the_class(self) -> None:
         h = Harness(budget=1.0)
         h.ask_error = RuntimeError("секретный текст вопроса")

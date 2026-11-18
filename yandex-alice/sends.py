@@ -12,7 +12,7 @@ try:
 except ImportError:  # тесты импортируют модули плагина как модули верхнего уровня
     import protocol  # type: ignore[no-redef]
 
-FINAL, INTERIM, OUTSIDE, RECOVERED = "final", "interim", "outside", "recovered"
+FINAL, INTERIM, OUTSIDE, RECOVERED, LATE = "final", "interim", "outside", "recovered", "late"
 _SIGN = "♻"   # Hermes дописывает U+FE0F, его не требуем
 
 
@@ -30,16 +30,19 @@ def strip_marker(text: str | None) -> str:
 
 
 def classify_send(*, open_turn: bool, turn_mid: str | None, reply_to: str | None, notify: object,
-                  interim: bool, text: str | None, approval_prompt: bool = False) -> str:
-    """FINAL / INTERIM / RECOVERED / OUTSIDE для одного send().
+                  interim: bool, text: str | None, approval_prompt: bool = False, late: bool = False) -> str:
+    """FINAL / INTERIM / RECOVERED / LATE / OUTSIDE для одного send().
 
     open_turn — у чата есть ход между on_processing_start и on_processing_complete; turn_mid — message_id этого хода
     (None у внутреннего хода автопродолжения, его итог приходит с reply_to=None); approval_prompt — текст `/approve`
-    Hermes (`is_approval_prompt`): служебный, как промежуточная отправка (S4, вывод 5)."""
+    Hermes (`is_approval_prompt`): служебный, как промежуточная отправка (S4, вывод 5); late — reply_to — ход, снятый
+    без complete (HERMESYAND-3): его итог — поздний, при любом открытом ходе."""
     if interim or approval_prompt:
         return INTERIM
     if open_turn and notify is True and reply_to == turn_mid:
         return FINAL
+    if late and notify is True:
+        return LATE
     if not open_turn and split_marker(text)[0]:
         return RECOVERED
     return OUTSIDE
@@ -47,7 +50,10 @@ def classify_send(*, open_turn: bool, turn_mid: str | None, reply_to: str | None
 
 def forward_text(*, open_turn: bool, kind: str, text: str | None) -> str | None:
     """Текст для Telegram у отправки вне хода, которая не служебная и не восстановленная; иначе None.
-    Неитоговое внутри хода (📬 No home channel…, прогресс, повторы) не озвучивается и не пересылается."""
+    Неитоговое внутри хода (📬 No home channel…, прогресс, повторы) не озвучивается и не пересылается.
+    Поздний итог снятого хода (LATE) — весь, с подписью, при любом открытом ходе."""
+    if kind == LATE:
+        return protocol.whole_text(text or "") if (text or "").strip() else None
     if open_turn or kind != OUTSIDE or not (text or "").strip():
         return None
     return protocol.telegram_text(text or "")

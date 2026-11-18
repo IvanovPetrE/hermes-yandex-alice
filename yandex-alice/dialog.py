@@ -19,6 +19,7 @@ IDLE, WAIT, NEW_OR_OLD, READY, TG_FAILED, CONTINUE = "idle", "wait", "new_or_old
 class Settings:
     continue_hours: float = 2.0     # М2/Д6: беседа продолжается, если с последней реплики владельца меньше N часов
     lost_after: float = 600.0       # Д9: с после старта шлюза без итога и без внутреннего хода — «вопрос потерялся»
+    turn_lost_after: float = 900.0  # HERMESYAND-3: с без признаков жизни хода (нет complete, итога, отправок) — потерян
     unclaimed_ttl: float = 86400.0  # Д13: срок незабранного ответа
     rate_per_minute: int = 6        # Д16: ходов агента в минуту
     telegram: bool = True           # доставка в Telegram настроена
@@ -32,6 +33,7 @@ class Question:
     to_telegram: bool = False          # владелец попросил «пришли в Телеграм» — итог уходит туда
     restarted_at: float | None = None  # шлюз стартовал, пока вопрос был в работе (Д9)
     internal_seen: bool = False        # после старта Hermes дозапустил внутренний ход (S5)
+    alive_at: float | None = None      # последний признак жизни хода (старт, отправка, конец ожидания); None — хода нет
 
 
 @dataclass(frozen=True)
@@ -132,6 +134,13 @@ class InternalStarted:
     conversation: str
 
 
+@dataclass(frozen=True)
+class TurnAlive:
+    """Признак жизни хода беседы — его старт или отправка шлюза в нём (HERMESYAND-3): срок потерянного хода — заново."""
+    now: float
+    conversation: str
+
+
 RECALL_FOUND, RECALL_MISSING, RECALL_ERROR = "found", "missing", "error"   # исход чтения истории (S7)
 
 
@@ -179,6 +188,12 @@ class Telegram:
 
 
 @dataclass(frozen=True)
+class DropTurn:
+    """Ход беседы потерян (HERMESYAND-3): снять записи об открытом ходе и освободить гейт Р2."""
+    conversation: str
+
+
+@dataclass(frozen=True)
 class RecallLast:
     """«Повтори» в обычной беседе: адаптер берёт последний ответ из истории Hermes и шлёт Recalled (этап 3)."""
     conversation: str
@@ -202,10 +217,17 @@ def _clock(st: State, now: float, settings: Settings) -> tuple[State, tuple[obje
     q = st.question
     if q and q.restarted_at is not None and not q.internal_seen and now - q.restarted_at >= settings.lost_after:
         st = replace(st, question=None, announce=p.REPLY_LOST, wait_round=0)
+    # Срок идёт только у начатого хода (`alive_at` ставит его старт): вопрос без хода гейт Р2 не держит. После старта
+    # шлюза правит Д9, на ожидании подтверждения (Д8) отсчёт стоит.
+    lost = bool(q and q.alive_at is not None and q.restarted_at is None and not q.approval
+                and now - q.alive_at >= settings.turn_lost_after)
+    if lost:   # HERMESYAND-3: тихо, без озвучки; фраза, на которой это случилось, идёт агенту обычным порядком
+        st = replace(st, question=None, wait_round=0)
+        acts += (DropTurn(st.conversation), Telegram(st.conversation, p.telegram_text(p.REPLY_TURN_LOST)))
     if st.answer is None and (st.prompt in (READY, TG_FAILED)
                               or (st.prompt in (WAIT, NEW_OR_OLD) and st.question is None)):
         st = replace(st, prompt=IDLE, held="")
-    if (st.question is None and st.answer is None and not st.holding and st.last_owner_at is not None
+    if (st.question is None and not lost and st.answer is None and not st.holding and st.last_owner_at is not None
             and now - st.last_owner_at >= settings.unclaimed_ttl):
         # тексты — персональные данные: после суток тишины владельца не храним (этап 4, решение владельца)
         st = replace(st, last_said="", last_reply="", last_turn="", reading=(), reading_pos=0, held="", prompt=IDLE,
@@ -227,6 +249,10 @@ def _dispatch(state: State, event: object, settings: Settings) -> tuple[State, t
         if event.conversation == state.conversation and state.question:
             return replace(state, question=replace(state.question, internal_seen=True)), ()
         return state, ()
+    if isinstance(event, TurnAlive):
+        if event.conversation == state.conversation and state.question:
+            return replace(state, question=replace(state.question, alive_at=event.now)), ()
+        return state, ()
     if isinstance(event, Utterance):
         return _utterance(state, event, settings)
     if isinstance(event, Final):
@@ -243,7 +269,10 @@ def _dispatch(state: State, event: object, settings: Settings) -> tuple[State, t
         return _delivery(state, event)
     if isinstance(event, Approval):
         if event.conversation == state.conversation and state.question:
-            return replace(state, question=replace(state.question, approval=event.waiting)), ()
+            q = replace(state.question, approval=event.waiting)
+            if not event.waiting and q.alive_at is not None:   # отсчёт стоял на ожидании — с нажатия заново
+                q = replace(q, alive_at=event.now)
+            return replace(state, question=q), ()
         return state, ()
     return state, ()
 

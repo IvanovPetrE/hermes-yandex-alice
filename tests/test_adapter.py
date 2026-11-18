@@ -362,6 +362,68 @@ class RestartTests(AdapterCase):
         self.assertEqual(await self.say("да", message=2), ("Итог после переподключения.", False))
 
 
+class LostTurnTests(AdapterCase):
+    """HERMESYAND-3: ход без on_processing_complete снимается по сроку в обоих местах; его поздний итог — в Telegram."""
+
+    def telegram(self) -> list:
+        sent = []
+
+        async def sender(pconfig, chat, text, notify=False):
+            sent.append(text)
+            return {"success": True}
+
+        hs.world.sender = sender
+        hs.world.scope.update({"TELEGRAM_BOT_TOKEN": "0:test-token", "ALICE_TELEGRAM_CHAT": CHAT})
+        return sent
+
+    @staticmethod
+    def later(ad, seconds: float) -> None:
+        real = ad._engine._wall
+        ad._engine._wall = lambda: real() + seconds
+
+    async def test_the_deadline_drops_the_adapter_record_and_a_late_final_goes_to_telegram(self):
+        sent = self.telegram()
+        ad = await self.start(gateway=HoldGateway())
+        await self.say(QUESTION)
+        (event,) = self.gateway.events
+        chat = event.source.chat_id
+        self.assertIn(chat, ad._open)
+        self.later(ad, 901)
+        ad._engine.tick()
+        self.assertNotIn(chat, ad._open)
+        self.assertTrue(await hs.eventually(lambda: "Алиса:\nПрошлый ответ не пришёл." in sent))
+        await ad.send(chat, "Поздний итог.", reply_to=event.message_id, metadata={"notify": True})
+        self.assertTrue(await hs.eventually(lambda: "Алиса:\nПоздний итог." in sent))
+        self.assertIsNone(ad._engine.state.answer)   # голосом не звучит
+
+    async def test_a_late_final_while_a_new_turn_is_open_goes_to_telegram_not_to_the_new_question(self):
+        sent = self.telegram()
+        ad = await self.start(gateway=HoldGateway())
+        await self.say(QUESTION)
+        old = self.gateway.events[0]
+        self.later(ad, 901)
+        ad._engine.tick()
+        self.assertEqual((await self.say("а завтра?", message=2))[0],
+                         "Вопрос принят. Спросите ответ позже или готовы подождать?")
+        new = self.gateway.events[1]
+        await ad.send(old.source.chat_id, "Поздний итог.", reply_to=old.message_id, metadata={"notify": True})
+        self.assertTrue(await hs.eventually(lambda: "Алиса:\nПоздний итог." in sent))
+        self.assertIsNotNone(ad._engine.state.question)   # новый вопрос в работе
+        await ad.on_processing_complete(old, None)         # поздний complete снятого хода
+        self.assertIsNotNone(ad._engine.state.question)
+        self.assertIn(new.source.chat_id, ad._open)
+
+    async def test_an_interim_send_in_the_open_turn_is_a_sign_of_life(self):
+        ad = await self.start(gateway=HoldGateway())
+        await self.say(QUESTION)
+        (event,) = self.gateway.events
+        started = ad._engine.state.question.alive_at
+        self.later(ad, 600)
+        await ad.send(event.source.chat_id, "⏳ Ещё работаю", reply_to=event.message_id,
+                      metadata={"_interim_send": True, "notify": True})
+        self.assertGreaterEqual(ad._engine.state.question.alive_at, started + 600)
+
+
 class SendTests(AdapterCase):
     async def test_send_outside_turn_without_telegram_is_accepted_and_silent(self):
         ad = await self.start()
