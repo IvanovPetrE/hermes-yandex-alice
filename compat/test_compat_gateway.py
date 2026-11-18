@@ -307,6 +307,7 @@ class _BusyGroup(unittest.TestCase):
                            f"ALICE_TELEGRAM_CHAT={CHAT}\nALICE_TELEGRAM_OWNER_ID={OWNER_TG}\n"))
             cls.world.run([("busy_after_lost", sc_busy_after_lost)])
             cls.telegram = [v.text for v in cls.standin.visible(CHAT)]
+            print(cls.standin.describe())
         finally:
             cls.standin.stop()
         w = cls.world
