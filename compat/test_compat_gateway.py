@@ -299,7 +299,9 @@ class _BusyGroup(unittest.TestCase):
         cls.standin.start()
         try:
             cls.world = harness.World(
-                "  telegram:\n    enabled: true\n    extra:\n"   # продолжает раздел `platforms:` из World.prepare
+                # `extra` плагина (продолжает раздел из World.prepare): отправитель Telegram берёт адрес Bot API отсюда
+                f"      telegram_base_url: {cls.standin.api_base}\n"
+                "  telegram:\n    enabled: true\n    extra:\n"   # свой адаптер Telegram шлюза
                 f"      base_url: {cls.standin.api_base}\n      base_file_url: {cls.standin.file_base}\n"
                 f"display:\n  busy_input_mode: {cls.BUSY_MODE}\n",
                 env_extra=(f"TELEGRAM_BOT_TOKEN={cls.standin.token}\nTELEGRAM_ALLOWED_USERS={OWNER_TG}\n"

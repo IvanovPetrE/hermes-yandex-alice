@@ -341,7 +341,9 @@ def tg_kwargs(standin) -> dict:
     """Настройки сцены с Telegram: поддельный Bot API `TelegramStandin` вместо настоящего (как в `test_compat_approval`)."""
     return dict(
         platform_lines=R_PLATFORM,
-        config_extra=("  telegram:\n    enabled: true\n    extra:\n"   # продолжает раздел `platforms:` из World.prepare
+        # `extra` плагина (продолжает раздел из World.prepare): отправитель Telegram берёт адрес Bot API отсюда
+        config_extra=(f"      telegram_base_url: {standin.api_base}\n"
+                      "  telegram:\n    enabled: true\n    extra:\n"   # свой адаптер Telegram шлюза
                       f"      base_url: {standin.api_base}\n      base_file_url: {standin.file_base}\n" + R_CONFIG),
         env_extra=(f"TELEGRAM_BOT_TOKEN={standin.token}\nTELEGRAM_ALLOWED_USERS={OWNER_TG}\n"
                    "HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=1\nHERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS=0\n"
