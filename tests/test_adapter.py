@@ -243,9 +243,11 @@ class NegativeHttpTests(AdapterCase):
 class EntryTests(AdapterCase):
     async def test_foreign_skill_and_user_get_owner_only_refusal(self):
         await self.start()
-        for name, kw in {"skill": {"skill": "other"}, "user": {"user": "stranger"}, "stranger, empty text": {"text": "", "user": "stranger"}}.items():
+        cases = {"skill": {"skill": "other"}, "user": {"user": "stranger"},
+                 "stranger, empty text": {"text": "", "user": "stranger"}}
+        for n, (name, kw) in enumerate(cases.items(), 1):   # разные message_id: повтор хода дедуплицируется
             with self.subTest(name):
-                kw = {"text": QUESTION, **kw, "message": hash(name) % 1000}
+                kw = {"text": QUESTION, **kw, "message": n}
                 self.assertEqual(await self.say(**kw), ("Этот навык работает только для владельца.", True))
         self.assertEqual(self.gateway.events, [])
 
