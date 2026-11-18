@@ -81,27 +81,45 @@ async def sc_final_no_complete(w) -> None:
     await w.ask("fnc2", "сорок первый [t41] вопрос")
 
 
+LOST_FINAL = "Потерянный сорок второй."
+
+
+def mute_final(w, text: str) -> None:
+    """Шлюз «теряет» итог хода: отправка с этим текстом до адаптера и журнала не доходит, Hermes получает успех."""
+    from gateway.platforms.base import SendResult
+
+    orig = w.adapter.send
+    muted = w.state.setdefault("muted_finals", [])
+
+    async def wrapper(chat_id, content, reply_to=None, metadata=None, *a, **k):
+        if text in (content or ""):
+            muted.append(None if reply_to is None else str(reply_to))
+            return SendResult(success=True, message_id="muted")
+        return await orig(chat_id, content, reply_to, metadata, *a, **k)
+    w.adapter.send = wrapper
+
+
 async def sc_lost_turn(w) -> None:
-    """Ход без итога и без complete дольше срока: тик снимает его, новая фраза уходит агенту, поздний итог — не голосом."""
+    """Hermes закончил ход, но ни итог, ни complete до адаптера не дошли: через срок тик снимает ход, новая фраза
+    уходит в свободную сессию и звучит. Поздний итог снятого хода (Telegram, не голос) — unit-тесты: настоящий Hermes,
+    ещё занятый ходом, отвечает на фразу из очереди с `reply_to` прошлого хода (HERMESYAND-3, compat 2026-11-18)."""
     import dataclasses
 
-    f = _fakes()
     mute_complete(w, "[t42]")
+    mute_final(w, LOST_FINAL)
     engine = w.adapter._engine
     engine.settings = dataclasses.replace(engine.settings, turn_lost_after=2.0)
-    w.script.add("t42", f.Hang(8.0), f.Text("Поздний сорок второй."))
-    w.script.add("t43", f.Text("Ответ сорок третий."))
+    w.script.add("t42", _fakes().Text(LOST_FINAL))
+    w.script.add("t43", _fakes().Text("Ответ сорок третий."))
     said = w.voice.setdefault("lost1", [])
     said.append(await w.say("сорок второй [t42] вопрос"))   # бюджет 3,5 с > срока 2 с
-    await w.wait_seen("t42")
+    end = asyncio.get_running_loop().time() + 15.0          # ход в Hermes закончился: итог заглушён
+    while not w.state["muted_finals"] and asyncio.get_running_loop().time() < end:
+        await asyncio.sleep(0.1)
+    w.state["open_before_tick"] = sorted(w.adapter._open)
     w.adapter._engine.tick()
     w.state["open_after_tick"] = sorted(w.adapter._open)
     await w.ask("lost2", "сорок третий [t43] вопрос")
-    end = asyncio.get_running_loop().time() + 15.0   # поздний итог t42 должен прийти в send()
-    while asyncio.get_running_loop().time() < end:
-        if any(op.op == "send" and "Поздний сорок второй." in op.content for op in w.journal):
-            break
-        await asyncio.sleep(0.2)
 
 
 class _Group(unittest.TestCase):
@@ -217,19 +235,18 @@ class GroupG(_Group):
         self.assertIsNone(self.world.turns()[mid]["complete"])
         self.assertEqual(len(self._mids("[t41]")), 1)
 
-    def test_a_lost_turn_releases_the_gate_and_its_late_final_is_not_voiced(self) -> None:
+    def test_a_lost_turn_is_dropped_on_tick_and_the_next_phrase_is_answered(self) -> None:
         self.scenario_ok("lost_turn")
         self.assertEqual(self.world.voice["lost1"], ["Вопрос принят. Спросите ответ позже или готовы подождать?"])
+        (mid,) = self._mids("[t42]")
+        self.assertIn(mid, self.world.state["muted"], "complete хода t42 не был заглушён")
+        self.assertEqual(self.world.state["muted_finals"], [mid], "итог хода t42 не был заглушён")
+        self.assertEqual(len(self.world.state["open_before_tick"]), 1, "до тика хода не было: проверка была бы пустой")
         self.assertEqual(self.world.state["open_after_tick"], [], "тик не снял запись хода в адаптере")
         self.assertEqual(len(self._mids("[t43]")), 1, "фраза после срока не дошла до Hermes")
         self.assertEqual(self.world.voice["lost2"][-1], "Ответ сорок третий.")
-        (mid,) = self._mids("[t42]")
-        self.assertIn(mid, self.world.state["muted"])
-        late = [op for op in self.world.journal if op.op == "send" and "Поздний сорок второй." in op.content]
-        self.assertTrue(late, "поздний итог t42 не пришёл: проверка «не голосом» была бы пустой")
-        self.assertEqual(late[0].reply_to, mid)
         spoken = " ".join(s for lines in self.world.voice.values() for s in lines)
-        self.assertNotIn("Поздний сорок второй.", spoken)
+        self.assertNotIn("Не получилось", spoken)
 
 
 if __name__ == "__main__":
