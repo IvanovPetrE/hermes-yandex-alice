@@ -374,6 +374,15 @@ class FailureTests(unittest.TestCase):
         _, acts = d.step(asked(), d.Final(now=101.0, conversation=CONV, text="ГОЛОС: Цена 1500.\nТЕЛЕГРАМ: Счёт №7."))
         self.assertEqual(acts, (d.Telegram(CONV, "Алиса:\nСчёт №7."), d.Say("Цена 1500.")))
 
+    def test_details_of_an_unclaimed_answer_go_to_telegram_at_once_and_only_once(self):
+        # живой прогон 2026-11-18: модель не уложилась в бюджет («скинь в тг»), ТЕЛЕГРАМ-часть ждала озвучивания и не ушла
+        st, acts = d.step(waiting(), d.Final(now=101.0, conversation=CONV,
+                                             text="ГОЛОС: Список готов.\nТЕЛЕГРАМ: 1. Линзы в 18:30."))
+        self.assertEqual(acts, (d.Telegram(CONV, "Алиса:\n1. Линзы в 18:30."),))
+        self.assertEqual(st.answer.parts, ("Список готов.",))
+        _, acts = d.step(st, utter("да", "YANDEX.CONFIRM", turn="s1-9", now=102.0))
+        self.assertEqual(acts, (d.Say("Список готов."),))   # озвучивание Telegram не повторяет
+
     def test_gateway_error_is_said_as_failure_and_sent_to_telegram(self):
         _, acts = d.step(asked(), d.Final(now=101.0, conversation=CONV, text=GATEWAY_ERROR))
         self.assertEqual(acts, (d.Telegram(CONV, "Алиса:\n" + GATEWAY_ERROR), d.Say(FAILED)))

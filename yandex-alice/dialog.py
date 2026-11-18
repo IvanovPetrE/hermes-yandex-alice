@@ -612,4 +612,7 @@ def _final(st: State, ev: Final, settings: Settings) -> tuple[State, tuple[objec
     if card or p.is_gateway_error(ev.text):   # не «ответ готов»: сказать один раз, текст уже в Telegram (О9)
         return (replace(st, announce=ans.parts[0], prompt=IDLE if st.prompt == WAIT else st.prompt),
                 (Telegram(st.conversation, ans.telegram),))
+    if ans.telegram:   # подробности не ждут озвучивания (живой прогон 2026-11-18: модель не уложилась в бюджет, «скинь в тг»
+        # не сработало, пока владелец не вернулся): уходят сразу, а при озвучивании не повторяются
+        return replace(st, answer=replace(ans, telegram="")), (Telegram(st.conversation, ans.telegram),)
     return replace(st, answer=ans), ()
