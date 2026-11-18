@@ -67,6 +67,7 @@ class State:
     last_turn: str = ""                # turn_id (session_id-message_id) последней реплики — дедупликация ретрая
     last_reply: str = ""               # что ей ответили; "" — ответ ещё готовится (удержание)
     answered: bool = False             # в текущей беседе был итог: пустая история при «повтори» — сбой, а не «нечего» (S7)
+    lost_late: bool = False            # Д9 сказала «потерялся»: поздний внутренний итог — в Telegram, не ответ на новый вопрос
 
 
 # --- события -------------------------------------------------------------------------------------------------------
@@ -226,7 +227,7 @@ def _clock(st: State, now: float, settings: Settings) -> tuple[State, tuple[obje
         st = replace(st, answer=None)
     q = st.question
     if q and q.restarted_at is not None and not q.internal_seen and now - q.restarted_at >= settings.lost_after:
-        st = replace(st, question=None, announce=p.REPLY_LOST, wait_round=0)
+        st = replace(st, question=None, announce=p.REPLY_LOST, wait_round=0, lost_late=True)
     # Срок идёт только у начатого хода (`alive_at` ставит его старт): вопрос без хода гейт Р2 не держит. После старта
     # шлюза правит Д9, на ожидании подтверждения (Д8) отсчёт стоит.
     lost = bool(q and q.alive_at is not None and q.restarted_at is None and not q.approval
@@ -457,7 +458,7 @@ def _new_dialog(st: State, ev: Utterance, settings: Settings) -> tuple[State, tu
     to_telegram = (bool(sent) or st.question is not None) and settings.telegram
     held = st.held
     st = replace(st, conversation=ev.fresh_id, question=None, answer=None, holding="", prompt=IDLE, held="",
-                 wait_round=0, orphans=orphans, reading=(), reading_pos=0, answered=False)
+                 wait_round=0, orphans=orphans, reading=(), reading_pos=0, answered=False, lost_late=False)
     if held:   # М1: удержанная фраза — первый вопрос новой беседы; про Telegram — перед ближайшим ответом
         if to_telegram:
             st = replace(st, notice=f"{st.notice} {p.REPLY_IN_TELEGRAM}".strip())
@@ -474,7 +475,7 @@ def _launch(st: State, ev: Utterance, settings: Settings) -> tuple[State, State 
     fresh = (st.question is None and st.answer is None
              and (st.last_owner_at is None or ev.now - st.last_owner_at >= settings.continue_hours * 3600))
     if fresh:
-        st = replace(st, conversation=ev.fresh_id, answered=False)
+        st = replace(st, conversation=ev.fresh_id, answered=False, lost_late=False)
     if ev.text or ev.intents:
         return st, st, ()
     st = replace(st, last_owner_at=ev.now)
@@ -637,7 +638,10 @@ def _final(st: State, ev: Final, settings: Settings) -> tuple[State, tuple[objec
     if ev.conversation != st.conversation:   # беседа-сирота или итог старой беседы: голосом его не ждут
         return _drop_orphan(st, ev.conversation), (Telegram(ev.conversation, p.whole_text(ev.text)),)
     if st.question is None:   # итог без вопроса в работе (run, фон, делегирование; C4) — голосом не звучит
-        return st, (Telegram(st.conversation, p.whole_text(ev.text)),)
+        return replace(st, lost_late=False), (Telegram(st.conversation, p.whole_text(ev.text)),)
+    if ev.internal and st.lost_late:   # HERMESYAND-5: поздний итог вопроса, потерянного по Д9, — не ответ на новый вопрос
+        return replace(st, lost_late=False), (Telegram(st.conversation, p.whole_text(ev.text)),)
+    st = replace(st, lost_late=False)   # итог нового вопроса: старого уже ждать нечего
     whole = p.whole_text(ev.text)
     card = ev.card_failed or ev.approvals_off
     if card:   # карточка не дошла (S4) или подтверждения не настроены: своя озвучка, текст агента — в Telegram

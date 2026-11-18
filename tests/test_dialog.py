@@ -463,11 +463,53 @@ class LostTests(unittest.TestCase):
         self.assertEqual(acts, (d.Say(LOST),))
 
 
+def lost_said():
+    """Д9: после перезапуска прошло 10 минут, Алиса сказала «Вопрос потерялся»; вопроса в работе нет."""
+    st, acts = d.step(restarted(), utter("а завтра?", now=1600.0))
+    assert acts == (d.Say(LOST),), acts
+    return st
+
+
 MARK = "♻️ Recovered reply — may be a duplicate:\n\n"
 
 
 def recovered(now=1100.0, conv=CONV, body="Солнечно."):
     return d.Recovered(now=now, conversation=conv, text=body, raw=MARK + body)
+
+
+class LateAfterLostTests(unittest.TestCase):
+    """HERMESYAND-5: итог, пришедший после «Вопрос потерялся», доходит до владельца — в Telegram, не голосом."""
+
+    TG = (d.Telegram(CONV, "Алиса:\nСолнечно."),)
+
+    def test_late_internal_final_goes_to_telegram(self):
+        st, acts = d.step(lost_said(), d.Final(now=1700.0, conversation=CONV, text="Солнечно.", internal=True))
+        self.assertEqual(acts, self.TG)
+        self.assertEqual((st.question, st.answer), (None, None))
+
+    def test_late_marked_send_goes_to_telegram(self):
+        st, acts = d.step(lost_said(), recovered(now=1700.0))
+        self.assertEqual(acts, (d.Telegram(CONV, "Алиса:\n" + MARK + "Солнечно."),))
+        self.assertEqual((st.question, st.answer), (None, None))
+
+    def test_late_final_of_the_old_question_does_not_answer_the_repeated_one(self):
+        st, acts = d.step(lost_said(), utter("а завтра?", now=1601.0, turn="s1-9"))
+        self.assertEqual(acts, (d.Ask(CONV, "а завтра?"), d.Hold()))
+        st, acts = d.step(st, d.Final(now=1700.0, conversation=CONV, text="Солнечно.", internal=True))
+        self.assertEqual(acts, self.TG)          # не Say: это итог старого вопроса
+        self.assertIsNotNone(st.question)        # новый вопрос ждёт своего ответа
+
+    def test_own_final_of_the_repeated_question_is_voiced_and_ends_the_wait_for_the_old_one(self):
+        st, _ = d.step(lost_said(), utter("а завтра?", now=1601.0, turn="s1-9"))
+        st, acts = d.step(st, d.Final(now=1650.0, conversation=CONV, text="Дождь."))
+        self.assertEqual(acts, (d.Say("Дождь."),))
+        self.assertFalse(st.lost_late)
+
+    def test_late_marked_send_does_not_answer_the_repeated_question(self):
+        st, _ = d.step(lost_said(), utter("а завтра?", now=1601.0, turn="s1-9"))
+        st, acts = d.step(st, recovered(now=1700.0))
+        self.assertEqual(acts, (d.Telegram(CONV, "Алиса:\n" + MARK + "Солнечно."),))
+        self.assertIsNotNone(st.question)
 
 
 class RecoveredTests(unittest.TestCase):
