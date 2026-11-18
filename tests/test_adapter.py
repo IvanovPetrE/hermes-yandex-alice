@@ -13,6 +13,7 @@ import socket
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -311,6 +312,54 @@ class QuestionTests(AdapterCase):
         text = "\n".join(logs.output)
         for forbidden in (SECRET, QUESTION, "Готово, всё хорошо.", "Ещё работаю", "/status"):
             self.assertNotIn(forbidden, text)
+
+
+class HoldGateway:
+    """Шлюз открывает ход и ничего не отвечает: итог и конец хода тест подаёт сам."""
+
+    def __init__(self):
+        self.events = []
+
+    async def __call__(self, ad, event):
+        self.events.append(event)
+        await ad.on_processing_start(event)
+
+    async def close(self):
+        return None
+
+
+class RestartTests(AdapterCase):
+    async def test_turn_ended_by_gateway_shutdown_keeps_the_question(self):
+        # compat (группа R): остановка шлюза завершает ход без итога; адаптер не говорит «не получилось» —
+        # Hermes дозапустит ход после старта
+        ad = await self.start(gateway=HoldGateway())
+        self.assertEqual((await self.say(QUESTION))[0], "Вопрос принят. Спросите ответ позже или готовы подождать?")
+        (event,) = self.gateway.events
+        ad.gateway_runner = SimpleNamespace(_draining=True)
+        await ad.on_processing_complete(event, None)
+        self.assertEqual((await self.say("да", message=2))[0], "Ещё не готово. Подождёте?")
+
+    async def test_turn_ended_without_a_final_outside_shutdown_still_fails(self):
+        ad = await self.start(gateway=HoldGateway())
+        await self.say(QUESTION)
+        (event,) = self.gateway.events
+        ad.gateway_runner = SimpleNamespace(_draining=False)
+        await ad.on_processing_complete(event, None)
+        self.assertEqual((await self.say("да", message=2))[0], "Не получилось, попробуйте ещё раз.")
+
+    async def test_final_of_a_turn_opened_before_reconnect_is_the_voice_answer(self):
+        # PLAN, этап 5 («Замечено»): ход открыл прежний экземпляр, итог пришёл новому — это итог, а не отправка вне хода
+        first = await self.start(gateway=HoldGateway())
+        await self.say(QUESTION)
+        (event,) = self.gateway.events
+        chat = event.source.chat_id
+        await first.disconnect()
+        second = self.make()
+        self.assertTrue(await second.connect(is_reconnect=True))
+        self.addAsyncCleanup(second.disconnect)
+        await second.send(chat, "Итог после переподключения.", reply_to=event.message_id, metadata={"notify": True})
+        await first.on_processing_complete(event, None)   # поздний конец хода у прежнего экземпляра ничего не ломает
+        self.assertEqual(await self.say("да", message=2), ("Итог после переподключения.", False))
 
 
 class SendTests(AdapterCase):

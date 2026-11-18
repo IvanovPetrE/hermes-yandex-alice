@@ -144,6 +144,24 @@ class GatewayErrorTests(unittest.TestCase):
                 self.assertTrue(p.is_gateway_error(text))
                 self.assertEqual(p.spoken(text), ["Не получилось, попробуйте ещё раз."])
 
+    def test_failed_turn_boundary_notices_of_the_history_are_errors(self):
+        # compat (группа H): при сбое провайдера Hermes закрывает ход служебной строкой (agent/turn_failure_copy.py);
+        # «повтори» читал её владельцу как ответ
+        for text in ("Your request was not processed. Send it again if you still want me to carry it out.",
+                     "  Your request was not processed. Send it again if you still want me to carry it out.\n",
+                     "This turn did not complete. Some actions may already have run; verify their effects "
+                     "before resending."):
+            with self.subTest(text=text.strip()[:40]):
+                self.assertTrue(p.is_gateway_error(text))
+                self.assertEqual(p.spoken(text), ["Не получилось, попробуйте ещё раз."])
+
+    def test_failed_turn_notice_quoted_in_an_answer_is_not_an_error(self):
+        for text in ("Hermes ответил: Your request was not processed. Send it again if you still want me to carry it out.",
+                     "Your request was not processed. Send it again if you still want me to carry it out. Но я всё сделал.",
+                     "This turn did not complete."):
+            with self.subTest(text=text[:40]):
+                self.assertFalse(p.is_gateway_error(text))
+
     def test_interrupted_in_an_ordinary_sentence_is_not_an_error(self):
         for text in ("Operation interrupted by the user, но данные сохранены.", "Список: Operation interrupted: пример",
                      "operation interrupted: в нижнем регистре", "Operation interruptedly"):

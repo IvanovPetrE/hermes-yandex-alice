@@ -52,7 +52,8 @@ yandex-alice/      каталог плагина → ~/.hermes/plugins/yandex-al
   history.py       чтение истории для «повтори»
   cron_guard.py    ограничения cron из голоса
 tests/             unittest, checkout Hermes не нужен
-prototypes/        пробы S1–S7 против живого Hermes (запуск вручную)
+compat/            тесты совместимости с настоящим Hermes (запуск вручную, `compat/README.md`)
+prototypes/        пробы S2, S3, S4, S6, S6b против живого Hermes (S1, S5, S7 перенесены в `compat/`; запуск вручную)
 docs/              конфигурация, навык, развёртывание, откат, совместимость, разведка и план
 ```
 

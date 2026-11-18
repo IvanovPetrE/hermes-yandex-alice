@@ -232,12 +232,20 @@ _EMPTY_SENTINEL = "(empty)"
 # Форма 4 — тоже только в истории (S7): остановка шлюза посреди хода оставляет служебную фразу прерванного хода
 # (agent/conversation_loop.py INTERRUPT_WAITING_FOR_MODEL_PREFIX, agent/turn_*.py); английские константы, не локализуются.
 _INTERRUPTED_PREFIXES = ("Operation interrupted:", "Operation interrupted during ", "Operation interrupted.")
+# Форма 5 — тоже только в истории (compat, группа H): ход, закончившийся без ответа (сбой провайдера), Hermes закрывает
+# строкой-границей (agent/turn_failure_copy.py FAILED_TURN_NOTICE / PARTIAL_FAILED_TURN_NOTICE); целиком и дословно,
+# чтобы настоящий ответ с цитатой этой фразы остался ответом.
+_FAILED_TURN_NOTICES = (
+    "Your request was not processed. Send it again if you still want me to carry it out.",
+    "This turn did not complete. Some actions may already have run; verify their effects before resending.",
+)
 
 
 def is_gateway_error(text: str) -> bool:
     """Известная форма текста ошибки шлюза (пустой ответ модели, сбой провайдера, прерванный ход), а не ответ агента."""
     text = text.lstrip().replace("️", "")
-    if text.strip() == _EMPTY_SENTINEL or text.startswith(_NO_REPLY_PREFIXES + _INTERRUPTED_PREFIXES):
+    if (text.strip() in (_EMPTY_SENTINEL,) + _FAILED_TURN_NOTICES
+            or text.startswith(_NO_REPLY_PREFIXES + _INTERRUPTED_PREFIXES)):
         return True
     return _EXHAUSTED_MARK in text and " — " in text.split("\n", 1)[0]
 

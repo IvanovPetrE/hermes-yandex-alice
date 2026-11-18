@@ -113,7 +113,9 @@ class Engine:
         if internal:   # Hermes дозапустил ход после перезапуска (S5): вопрос не потерян
             self._apply(d.InternalStarted(now=self._wall(), conversation=conversation))
 
-    def on_turn_complete(self, conversation: str, mid: str | None, internal: bool) -> None:
+    def on_turn_complete(self, conversation: str, mid: str | None, internal: bool, interrupted: bool = False) -> None:
+        """`interrupted` — шлюз останавливается: ход закончен без итога остановкой, а не сбоем. Hermes дозапустит его после
+        старта (S5, compat группа R), поэтому вопрос не закрывается — как при SIGKILL, когда хука нет."""
         turn = self._open.get(conversation)
         if turn is not None and turn[0] != mid:   # запоздалое завершение прошлого хода: новый ход идёт, гейт не трогаем
             return
@@ -122,7 +124,7 @@ class Engine:
             turn[1].set()
         had_final = conversation in self._finals
         self._finals.discard(conversation)
-        if not internal and not had_final:   # пустой внутренний ход вопрос не закрывает (S5, вывод 6)
+        if not internal and not had_final and not interrupted:   # пустой внутренний ход вопрос не закрывает (S5, вывод 6)
             self._apply(d.TurnClosed(now=self._wall(), conversation=conversation))
 
     def on_gateway_started(self) -> None:

@@ -288,7 +288,7 @@ loopback-тесты адаптера (этап 6).
   `connect()` (маршрут `yandex_alice` из `load_gateway_config().profile_routes`, дом `…/profiles/<имя>`); на чтении —
   `SessionDB(read_only=True)` → `find_session_by_origin` → `resolve_resume_session_id` → `get_messages` порциями по 20; правило
   «последнего ответа» (`last_answer`, `read_tail`, `pick_profile`) — **в чистый модуль** (`yandex-alice/history.py`, без Hermes,
-  с тестами; **перенесено срезом «а»**) из `prototypes/s7/plugin/history.py`; `/proc` не читать; текст из истории в логи не писать.
+  с тестами; **перенесено срезом «а»**) из пробы S7 (`prototypes/s7/plugin/history.py`, удалена, версия `6af233e`); `/proc` не читать; текст из истории в логи не писать.
 - По S6 (`docs/RECON.md`, «S6» → «Выводы»): `platform_hint` — правило `deliver=telegram:<чат>` для cron;
   хук `pre_tool_call` на `cronjob_manage` по `cron_guard.guard_args` (перенос из `prototypes/s6/plugin/` с
   `GuardTests`; **перенесено срезом «а»**) — раскладка A2 решена 2026-11-16 (S6b), хук без условий; инвариант хука — никогда не
@@ -465,16 +465,21 @@ Telegram, если он есть; чат и токен есть, а бота п�
 (`pending`, не воспроизводился и в пробе); чтение истории во время идущего хода и запись `Operation interrupted…` голосом
 (недостижимы по построению: пока вопрос в работе, «повтори» отвечает последней репликой Алисы; формы покрыты unit-тестами).
 
-**Открыто (найдено срезом «в», не чинилось; тесты фиксируют текущее поведение с пометкой «известное ограничение»):**
-1. *Штатная остановка шлюза посреди хода.* Первый запуск получает `on_processing_complete` (исход в v0.23.2 — `success`, в пробе
-   на v0.23.1 — `cancelled`) без итога, адаптер закрывает вопрос → после перезапуска владелец слышит «Не получилось, попробуйте
-   ещё раз.». Hermes при этом дозапускает ход (внутренний, заметка «CONTINUE»), итог уходит вне вопроса (Telegram «Алиса:»), а «повтори»
-   его читает из истории. При SIGKILL хука нет — ответ звучит голосом. Тест: `GroupR.test_known_limitation_graceful_stop_…`.
-2. *Сбой провайдера в истории.* Hermes пишет в историю английский текст «Your request was not processed. Send it again if you still
-   want me to carry it out.»; `protocol.is_gateway_error` его не узнаёт, и «повтори» зачитывает его владельцу вместо «Не получилось».
-   Тест: `GroupH.test_known_limitation_provider_error_text_is_repeated_verbatim`.
-3. *Итог хода прежнего экземпляра после переподключения* (замечено в этапе 5) — подтверждено тестом `GroupL.test_known_limitation_final_after_reconnect_…`:
-   итог приходит новому экземпляру вне хода с `reply_to` прежнего хода, владелец его не слышит, вопрос висит до Д9.
+**Найдено срезом «в» и исправлено 2026-11-18** (сначала тесты фиксировали поведение как «известное ограничение», затем были
+перевёрнуты на исправленное):
+1. *Штатная остановка шлюза посреди хода.* Первый запуск получает `on_processing_complete` без итога (исход в v0.23.2 —
+   `success`, в пробе на v0.23.1 — `cancelled`); адаптер закрывал вопрос, и после перезапуска владелец слышал «Не получилось»,
+   а итог дозапущенного хода уходил вне голоса. Теперь при `GatewayRunner._draining` (`adapter._shutting_down`) ход завершается
+   с `interrupted=True` (`engine.on_turn_complete`), вопрос остаётся — как при SIGKILL, ответ звучит голосом. Опора на приватный
+   признак шлюза закреплена тестом `GroupR.test_graceful_stop_mid_turn_resumes_and_answers`; нет признака — прежнее поведение
+   (сбой). Unit: `test_engine`, `test_adapter.RestartTests`.
+2. *Сбой провайдера в истории.* Hermes закрывает ход строкой «Your request was not processed. Send it again if you still want me
+   to carry it out.» (и «This turn did not complete. …» после инструментов; `agent/turn_failure_copy.py`); `protocol.is_gateway_error`
+   теперь узнаёт обе дословно (цитата внутри ответа остаётся ответом), «повтори» говорит «Не получилось». Тесты: `test_protocol`,
+   `GroupH.test_provider_error_repeats_as_failure_not_the_old_answer`.
+3. *Итог хода прежнего экземпляра после переподключения.* Открытые ходы (`_open`) теперь общие для экземпляров одной
+   регистрации (как книга карточек): итог, пришедший новому экземпляру, остаётся итогом и звучит голосом. Тесты:
+   `test_adapter.RestartTests`, `GroupL.test_final_of_a_turn_opened_before_reconnect_is_voiced`.
 
 - Unit (без Hermes): протокол, диалог, хранилище, HTTP-обработчик на настоящем loopback.
 - Совместимость: тесты адаптера против checkout Hermes на закреплённой ревизии (в CI — клонировать

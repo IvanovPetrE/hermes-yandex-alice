@@ -84,8 +84,8 @@ async def sc_life(w) -> None:
 
 
 async def sc_reconnect_mid_turn(w) -> None:
-    """Известное ограничение (docs/PLAN.md, этап 5): итог хода, открытого прежним экземпляром адаптера, после
-    переподключения приходит новому как отправка вне хода — владелец его не слышит, вопрос висит до Д9."""
+    """Итог хода, открытого прежним экземпляром адаптера, после переподключения приходит новому экземпляру: ход общий
+    на регистрацию, итог остаётся итогом и звучит голосом."""
     f = _fakes()
     hold = w.script.hold("l05")
     w.script.add("l05", f.Text("Ответ l05."))
@@ -103,10 +103,8 @@ async def sc_reconnect_mid_turn(w) -> None:
         await asyncio.sleep(1)
     hold.set()
     w.state["final_sent"] = await w.wait_op(lambda op: op.op == "send" and "Ответ l05." in op.content, 30.0)
-    rounds = []
-    for _ in range(2):
-        rounds.append(await w.say("да", confirm=True))
-    w.voice["mid_turn_reconnect"] = [first] + rounds
+    w.voice["mid_turn_reconnect"] = [first]
+    await w.confirm_until("mid_turn_reconnect", NOT_WAITING)
     await w.stop(child)
 
 
@@ -210,12 +208,11 @@ class GroupL(_Group):
         self.assertIn("logs/agent.log", found, "нет agent.log: проверка была бы пустой")
         self.assertFalse([k for k, v in found.items() if v], found)
 
-    def test_known_limitation_final_after_reconnect_is_not_voiced(self) -> None:
-        """Известное ограничение (docs/PLAN.md, «Открыто»): итог хода прежнего экземпляра владелец не слышит."""
+    def test_final_of_a_turn_opened_before_reconnect_is_voiced(self) -> None:
         self.scenario_ok(self.reconn, "reconn")
         self.assertIsNotNone(self.reconn.state["new_adapter"], "адаптер не переподключился")
-        self.assertTrue(all(r in harness.WAITING for r in self.reconn.voice["mid_turn_reconnect"]),
-                        self.reconn.voice["mid_turn_reconnect"])
+        self.assertIsNotNone(self.reconn.state["final_sent"], "итог не дошёл до адаптера: сцена ничего не доказывает")
+        self.assertEqual(self.reconn.voice["mid_turn_reconnect"][-1], "Ответ l05.")
 
     def test_busy_port_gateway_alive_and_foreign_socket_untouched(self) -> None:
         self.scenario_ok(self.busy, "busy")
@@ -285,6 +282,7 @@ async def sc_resume_stop(w) -> None:
     """Штатная остановка: первый запуск получает `on_processing_complete(cancelled)`, адаптер закрывает вопрос."""
     first, second = await mid_turn_restart(w, "stop", "r01")
     w.state["first_complete"] = next((op for op in w.journal if op.op == "complete" and op.pid == first.pid), None)
+    w.state["first_finals"] = [op for op in w.journal if op.op == "send" and op.pid == first.pid and op.reply_to]
     w.state["reply"] = await w.confirm_until("r01", NOT_WAITING)
     resumed = await w.wait_op(lambda op: op.op == "send" and op.pid == second.pid and RESUMED in op.content, 60.0)
     w.state["internal"] = internal_start(w, second)
@@ -374,20 +372,17 @@ class GroupR(_Group):
         self.assertNotIn("restored", spoken.lower())
         self.assertEqual(st["repeat"], RESUMED, "итог автопродолжения должен лежать в истории и читаться")
 
-    def test_known_limitation_graceful_stop_voices_failure_but_hermes_still_resumes(self) -> None:
-        """Известное ограничение (docs/PLAN.md, «Открыто»): при штатной остановке посреди хода первый запуск получает
-        `on_processing_complete` без итога, адаптер закрывает вопрос, и владелец слышит «Не получилось».
-        Hermes после запуска всё равно доводит ход (внутренний ход, заметка «CONTINUE»), но итог голосом не звучит
-        (вопроса уже нет), а «повтори» его читает из истории. Ожидаемо после починки — ответ `RESUMED` сразу."""
+    def test_graceful_stop_mid_turn_resumes_and_answers(self) -> None:
+        """Штатная остановка посреди хода: первый запуск получает `on_processing_complete` без итога (исход в v0.23.2 —
+        `success`, в пробе S5 на v0.23.1 — `cancelled`) при `GatewayRunner._draining`; адаптер вопрос не закрывает, и
+        после старта Hermes доводит ход (внутренний ход, заметка «CONTINUE») — ответ звучит голосом, как после SIGKILL."""
         w = self.stop_w
         self.scenario_ok(w, "r_stop")
         st = w.state
         self.assertTrue(st["stopped_clean"])
-        # Хук завершения у первого запуска приходит без итога; исход в v0.23.2 — `success` (в пробе S5 на v0.23.1 — `cancelled`).
         self.assertIsNotNone(st["first_complete"], "хука завершения у первого запуска не было")
-        self.assertFalse([op for op in w.journal if op.op == "send" and op.pid == st["first_complete"].pid
-                          and RESUMED in op.content])
-        self.assertEqual(st["reply"], FAILED)
+        self.assertFalse(st["first_finals"], "у первого запуска не должно быть итога: сцена ничего не доказывает")
+        self.assertEqual(st["reply"], RESUMED)
         self.assertIsNotNone(st["internal"], "после перезапуска не было внутреннего хода")
         self.assertIsNone(st["internal"].mid)
         self.assertIn("CONTINUE the interrupted task", st["notes"][0])   # interactive_resume=False

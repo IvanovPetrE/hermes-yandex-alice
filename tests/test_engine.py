@@ -115,6 +115,18 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(h.engine.state.answer.parts, ("Ответ",))
         self.assertEqual(h.engine.state.announce, "")   # «не получилось» не прозвучит
 
+    async def test_a_turn_interrupted_by_the_shutdown_keeps_the_question(self) -> None:
+        # compat (группа R): штатная остановка шлюза завершает ход без итога; Hermes дозапустит его после старта, как
+        # после SIGKILL — вопрос не закрывается, ответ прозвучит голосом
+        saved = []
+        h = Harness(budget=0.05, save=saved.append)
+        await h.engine.handle(rq("вопрос"))
+        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_turn_complete(h.conv, "m1", False, interrupted=True)
+        self.assertIsNotNone(h.engine.state.question)
+        self.assertEqual(h.engine.state.announce, "")
+        self.assertIsNotNone(saved[-1].question)
+
     async def test_an_empty_internal_turn_does_not_close_the_question(self) -> None:
         # S5, вывод 6: после перезапуска Hermes дозапускает внутренний ход; первый пустой, вопрос не закрывается.
         h = Harness(budget=0.05)

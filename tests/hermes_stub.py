@@ -97,6 +97,8 @@ class SendResult:
 class BasePlatformAdapter:
     """Только то, что берёт адаптер Алисы: поля и методы `base.py` v0.23.1 (`:1851`, `:2025–2028`, `:2058–2092`, `:4701`)."""
 
+    gateway_runner = None   # `base.py:1827`; шлюз ставит свой GatewayRunner, тесты — заглушку с `_draining`
+
     def __init__(self, config, platform) -> None:
         self.config, self.platform = config, platform
         self._running = False

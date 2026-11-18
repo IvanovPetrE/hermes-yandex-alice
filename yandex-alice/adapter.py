@@ -159,7 +159,8 @@ class AliceAdapter(BasePlatformAdapter):
     SUPPORTS_MESSAGE_EDITING = False
     interactive_resume = False   # автопродолжение Hermes должно вернуть ответ, а не спросить «что дальше» (S5, вывод 5)
 
-    def __init__(self, config, approvals_: "approvals.Approvals | None" = None, link: "_TelegramLink | None" = None):
+    def __init__(self, config, approvals_: "approvals.Approvals | None" = None, link: "_TelegramLink | None" = None,
+                 turns: "dict | None" = None):
         super().__init__(config, Platform(PLATFORM))
         # Книга карточек и связь с ботом — от регистрации (`register`): переживают новый экземпляр при переподключении.
         self._link = link if link is not None else _TelegramLink(str(get_hermes_home()))
@@ -174,7 +175,10 @@ class AliceAdapter(BasePlatformAdapter):
         self._ctx = None                # снимок контекста connect(): прокси и режим уведомлений своего профиля (S3, T6)
         self._tg_warned = False
         self._runner = self._site = self._tick = None
-        self._open = {}                 # chat_id -> (message_id открытого хода, внутренний ли он)
+        # chat_id -> (message_id открытого хода, внутренний ли он). Общий для экземпляров одной регистрации (как книга
+        # карточек): ход, открытый прежним экземпляром, после переподключения шлюз доводит до итога через новый — итог
+        # не должен стать отправкой вне хода (compat, группа L).
+        self._open = turns if turns is not None else {}
         self._sends = 0
         self._db_path = None
         self._read_lock = threading.Lock()
@@ -438,6 +442,14 @@ class AliceAdapter(BasePlatformAdapter):
         if self._engine is not None:
             self._engine.on_turn_start(chat, event.message_id, internal)
 
+    def _shutting_down(self) -> bool:
+        """Шлюз останавливается или перезапускается (`GatewayRunner._draining`, `run_shutdown.py`; закреплено тестом
+        совместимости, группа R): ход закончен остановкой, а не сбоем. Нет признака — считаем, что сбой."""
+        try:
+            return bool(getattr(self.gateway_runner, "_draining", False))
+        except Exception:  # noqa: BLE001
+            return False
+
     async def on_processing_complete(self, event, outcome):
         chat, internal = str(event.source.chat_id), bool(getattr(event, "internal", False))
         current = self._open.get(chat)
@@ -445,7 +457,7 @@ class AliceAdapter(BasePlatformAdapter):
             return
         self._open.pop(chat, None)
         if self._engine is not None:
-            self._engine.on_turn_complete(chat, event.message_id, internal)
+            self._engine.on_turn_complete(chat, event.message_id, internal, interrupted=self._shutting_down())
         try:   # живые карточки хода больше ничего не разрешат — сразу «неактуален» (решение владельца 2026-11-17)
             await self._appr.turn_closed(chat, _turn_key(event.message_id))
         except Exception as exc:  # noqa: BLE001
@@ -566,9 +578,10 @@ def register(ctx) -> None:
     своего дома."""
     link = _TelegramLink(str(get_hermes_home()))
     appr = approvals.Approvals(_hermes_deny, _hermes_resolve, bot=link.bot)
+    turns: dict = {}
 
     def make_adapter(config):
-        return AliceAdapter(config, appr, link)
+        return AliceAdapter(config, appr, link, turns)
 
     ctx.register_platform(
         name=PLATFORM,
