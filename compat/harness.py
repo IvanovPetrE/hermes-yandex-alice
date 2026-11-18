@@ -176,7 +176,8 @@ class World:
             self.adapter = runner.adapters.get(Platform(PLATFORM))
             if self.adapter is None:
                 raise AssertionError("адаптер yandex_alice не поднят шлюзом")
-            self.state["connected"] = self.adapter.is_connected()
+            connected = self.adapter.is_connected   # в v0.23.2 свойство; метод тоже допускаем
+            self.state["connected"] = bool(connected() if callable(connected) else connected)
             self.state["adapter_module"] = type(self.adapter).__module__
             instrument(self.adapter, self.journal)
             for name, fn in scenarios:
