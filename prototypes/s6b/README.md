@@ -33,7 +33,7 @@ W3 — задача из голоса дошла до Telegram (B); W4 — бе�
 cd prototypes/s6b && python -m unittest probe_s6b.GuardTests probe_s6b.ForwardTests probe_s6b.CopyTests
 ```
 
-Шлюз — нужны checkout Hermes и `python` окружения зависимостей (`prototypes/s1/README.md`); каталоги `s6` и `s6b`
+Шлюз — нужны checkout Hermes и `python` окружения зависимостей (`compat/README.md`); каталоги `s6` и `s6b`
 рядом, по процессу на группу:
 
 ```sh

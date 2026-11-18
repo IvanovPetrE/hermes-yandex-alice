@@ -52,7 +52,7 @@ cd prototypes/s5 && python -m unittest probe_s5 -k RecoveryTests
 ```
 
 Шлюз — нужны checkout Hermes и `python` закоммиченного окружения зависимостей (как в
-`prototypes/s1/README.md`); по процессу на группу:
+`compat/README.md`); по процессу на группу:
 
 ```sh
 D=$(mktemp -d /tmp/hya-s5-XXXXXX)

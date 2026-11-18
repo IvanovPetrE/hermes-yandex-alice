@@ -3,7 +3,7 @@
 #
 #   run.sh <hermes-checkout> <hermes-python> <B|C|L|P>
 #
-# <hermes-python> is the python of Hermes' committed dependency venv (see prototypes/s1/README.md).
+# <hermes-python> is the python of Hermes' committed dependency venv (see compat/README.md).
 # The probe directories prototypes/s6b AND prototypes/s6 (its harness) must sit side by side in a fresh
 # /tmp/hya-s6b-XXXXXX directory; everything a run writes (HOME, HERMES_HOME with the default profile and p2,
 # the plugin copies, cron stores, gateway locks, TMPDIR) stays under it, so removing that directory is the

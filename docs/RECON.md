@@ -188,21 +188,14 @@ Completions (старый bridge); плагинная платформа пол�
 ## S1: финальность и привязка ответа — вердикт PARTIAL (2026-11-14)
 
 Вопрос: может ли плагинная платформа отличить итог хода от промежуточных отправок и узнать, что ход
-закончился. Проба — `prototypes/s1/`: настоящий `GatewayRunner` с заглушкой-адаптером, которая
+закончился. Проба — `prototypes/s1/` (удалена на этапе 6, последняя версия — коммит `479d4d1`, `git show 479d4d1:prototypes/s1/README.md`;
+случаи S1 теперь проверяет `compat/` на нашем адаптере): настоящий `GatewayRunner` с заглушкой-адаптером, которая
 зарегистрирована как `ctx.register_platform` (`PlatformEntry(source="plugin", display_tier="minimal")`,
 `SUPPORTS_MESSAGE_EDITING=False`), агент — скриптованный LLM из `tests/fakes/fake_llm_provider.py`
 Hermes; модели, ключей и расходов нет. Проверено против checkout `3b42157858` (v0.23.1).
 
-Запуск (вывод — журнал вызовов адаптера по сценариям и итог `unittest`):
-
-```sh
-D=$(mktemp -d /tmp/hya-s1-XXXXXX) && cp -r prototypes/s1 "$D/"
-bash "$D/s1/run.sh" <hermes-checkout> <dependency-venv-python> A   # Ran 14 tests … OK (6 — правило)
-bash "$D/s1/run.sh" <hermes-checkout> <dependency-venv-python> B   # Ran 4 tests … OK
-rm -rf -- "$D"
-```
-
-`<dependency-venv-python>` — `python` закоммиченного окружения зависимостей Hermes (`prototypes/s1/README.md`).
+Результат прогона пробы: группа A — 14 тестов OK (6 из них — правило без Hermes), группа B — 4 теста OK.
+Запуск пробы — по `run.sh` из коммита `479d4d1`; `python` окружения зависимостей Hermes — см. `compat/README.md`.
 Группа A — уровень `minimal`, глобальный стриминг включён, `busy_input_mode: interrupt`; группа B —
 переопределения оператора (`display.tool_progress: all`, `display.interim_assistant_messages: true`,
 `busy_input_mode: queue`). Проба сверяет действующие значения до сценариев. Пиковый RSS процесса — ~245 МБ.
@@ -218,7 +211,7 @@ rm -rf -- "$D"
   с ⏳) — ими помечаются только отправки без якоря.
 - `_interim_send` и префиксы — только подсказки: многие служебные отправки идут без них.
   Правило LINE («первая отправка без метки и префикса») в этой версии озвучило бы «📬 No home channel…».
-  Правило закреплено unit-тестами без Hermes: `TrackerRuleTests` в `prototypes/s1/probe_s1.py`.
+  Правило закреплено unit-тестами без Hermes: `tests/test_sends.py` (перенесено из `TrackerRuleTests` пробы); на настоящем шлюзе с нашим адаптером — `compat/`.
 
 Почему не VALIDATED: документированного сигнала «это итог хода» нет — `reply_to`/`notify` и
 `_interim_send` («Gateway-internal», `gateway/run.py:480`) в руководстве не описаны. Риск изменения без

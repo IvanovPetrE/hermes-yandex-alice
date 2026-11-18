@@ -3,7 +3,7 @@
 #
 #   run.sh <hermes-checkout> <hermes-python> <A|B|C>
 #
-# <hermes-python> is the python of Hermes' committed dependency venv (see prototypes/s1/README.md:
+# <hermes-python> is the python of Hermes' committed dependency venv (see compat/README.md:
 # the store interpreter does not start with a throwaway HERMES_HOME). The probe directory must live
 # in a fresh /tmp/hya-s7-XXXXXX directory; everything a run writes (HOME, the probe's own HERMES_HOME,
 # every scene's home with its default profile and p2, the plugin copies, gateway locks, TMPDIR) stays

@@ -23,3 +23,26 @@ jobs:
         run: python -m pip install -r requirements-test.txt
       - name: Unit tests
         run: python -m unittest discover -s tests -v
+
+  # Совместимость с настоящим Hermes на закреплённой ревизии (docs/compatibility.md). Не запускалась: проверяется на этапе 9.
+  compat:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ["P", "A", "B"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: v0.23.2
+          path: hermes
+      - name: Pinned revision
+        run: test "$(git -C hermes rev-parse HEAD)" = "ae2a81ccc00e9b7c06301523e5bb09608397149c"
+      - uses: astral-sh/setup-uv@v5
+      - name: Hermes dependencies
+        working-directory: hermes
+        run: uv sync --locked --python 3.14 --extra all
+      - name: Compatibility tests
+        run: bash compat/run.sh hermes hermes/.venv/bin/python ${{ matrix.group }}

@@ -1,7 +1,7 @@
 """Что такое отправка шлюза для голосовой платформы — правило итога S1, пометка леджера S5, пересылка S6.
 
 Перенесено из проб `prototypes/s5/probe_s5.py` (RecoveryTests), `prototypes/s6/probe_s6.py` (ForwardTests) и правила
-итога из `prototypes/s1/probe_s1.py` (TrackerRuleTests — только правило, без журнала ходов пробы). Hermes не нужен.
+итога из пробы S1 (`prototypes/s1/probe_s1.py`, удалена, см. историю git; TrackerRuleTests — только правило, без журнала ходов пробы). Hermes не нужен.
 """
 import sys
 import unittest

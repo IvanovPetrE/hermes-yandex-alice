@@ -43,7 +43,7 @@ runner'а — это **не** публичный API плагинов, а обв
 ## Запуск
 
 Нужны checkout Hermes и `python` закоммиченного окружения зависимостей Hermes (как в
-`prototypes/s1/README.md`) и свободный loopback-порт (проверить `ss -ltn`):
+`compat/README.md`) и свободный loopback-порт (проверить `ss -ltn`):
 
 ```sh
 D=$(mktemp -d /tmp/hya-s2-XXXXXX)

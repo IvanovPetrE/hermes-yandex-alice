@@ -48,7 +48,7 @@ B — перезапуски: B1 штатный в простое, B2 штатн
 cd prototypes/s7 && python -m unittest probe_s7 -k HistoryTests
 ```
 
-Шлюз — нужны checkout Hermes и `python` закоммиченного окружения зависимостей (как в `prototypes/s1/README.md`); по
+Шлюз — нужны checkout Hermes и `python` закоммиченного окружения зависимостей (как в `compat/README.md`); по
 процессу на группу:
 
 ```sh

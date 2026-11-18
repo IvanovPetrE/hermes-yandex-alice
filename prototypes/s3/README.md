@@ -40,7 +40,7 @@
 ## Запуск
 
 Нужны checkout Hermes и `python` закоммиченного окружения зависимостей Hermes (как в
-`prototypes/s1/README.md`):
+`compat/README.md`):
 
 ```sh
 D=$(mktemp -d /tmp/hya-s3-XXXXXX)
