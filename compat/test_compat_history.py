@@ -76,7 +76,7 @@ async def sc_compress(w) -> None:
     """Ходы с большими токенами, пока Hermes не сожмёт беседу на месте; затем ещё один ход и «повтори»."""
     w.big = True
     try:
-        for i in range(1, 5):
+        for i in range(1, 6):   # пять ходов + «zafter» = 6 ходов агента: предел Д16 в минуту
             token = f"z{i}"
             w.script.add(token, _fakes().Text(f"Ответ {token}. " + "Подробности беседы. " * 300))
             await ask_long(w, token, f"вопрос [{token}]")
@@ -89,6 +89,10 @@ async def sc_compress(w) -> None:
         w.big = False
     w.script.add("zafter", _fakes().Text("Ответ после сжатия."))
     await w.ask("zafter", "ещё [zafter] вопрос")
+    view = w.target_db_view()
+    w.state["final_view"] = view
+    if "compressed_after" not in w.state and any(s["rows"] > s["message_count"] for s in view.get("sessions", [])):
+        w.state["compressed_after"] = "zafter"
     await repeat(w, "zafter_repeat")
 
 
