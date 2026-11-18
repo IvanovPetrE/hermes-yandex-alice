@@ -66,21 +66,37 @@ class Op:
     content: str = ""
     reply_to: Optional[str] = None
     metadata: dict = field(default_factory=dict)
+    pid: int = 0   # процесс шлюза (журнал дочерних шлюзов общий на дом)
+
+
+RESUME_MARK = "[System note: The previous turn was interrupted"   # заметка автопродолжения Hermes (run.py)
 
 
 class Script:
-    """Ответ скриптованного агента выбирается по токену `[tNN]` в последней реплике пользователя."""
+    """Ответ скриптованного агента выбирается по токену `[tNN]` в последней реплике пользователя; заметка
+    автопродолжения (`RESUME_MARK`) — отдельный ответ `resume`. Токен можно «подержать» до события (`hold`)."""
 
     def __init__(self, text_cls) -> None:
         self._text_cls = text_cls
         self.queues: dict[str, list] = {}
         self.fallback: dict[str, Any] = {}
         self.seen: list[str] = []
+        self.holds: dict[str, Any] = {}
+        self.resume_notes: list[str] = []   # последние реплики пользователя с заметкой автопродолжения
+        self.resume_hold = None             # threading.Event: подержать ответ на заметку
+        self.resume_text = "Ответ после перезапуска."
 
     def add(self, token: str, *responses, fallback=None) -> None:
         self.queues.setdefault(token, []).extend(responses)
         if fallback is not None:
             self.fallback[token] = fallback
+
+    def hold(self, token: str):
+        """Событие, пока не взведено, держит ответ на токен (поток поддельного LLM; 300 с — предел страховки)."""
+        import threading
+
+        self.holds[token] = threading.Event()
+        return self.holds[token]
 
     @staticmethod
     def _text_of(content) -> str:
@@ -101,9 +117,17 @@ class Script:
 
     def __call__(self, record: dict):
         text = self._last_user_text(record.get("body") or {})
+        if RESUME_MARK in text:   # раньше токенов: после SIGKILL заметка идёт в одной реплике с исходным вопросом
+            self.seen.append("resume")
+            self.resume_notes.append(text)
+            if self.resume_hold is not None:
+                self.resume_hold.wait(300)
+            return self._text_cls(self.resume_text)
         for token, queue in self.queues.items():
             if f"[{token}]" in text:
                 self.seen.append(token)
+                if token in self.holds:
+                    self.holds[token].wait(300)
                 if queue:
                     return queue.pop(0)
                 return self.fallback.get(token) or self._text_cls(f"default {token}")
@@ -128,8 +152,9 @@ def instrument(adapter, journal: list) -> None:
                                              metadata=dict(b.get("metadata") or {}))))
     wrap("handle_message", lambda b: journal.append(Op(now(), "ask", str(b["event"].source.chat_id),
                                                        mid=b["event"].message_id, content=b["event"].text)))
-    wrap("on_processing_start", lambda b: journal.append(Op(now(), "start", str(b["event"].source.chat_id),
-                                                            mid=b["event"].message_id)))
+    wrap("on_processing_start", lambda b: journal.append(Op(
+        now(), "start", str(b["event"].source.chat_id), mid=b["event"].message_id,
+        metadata={"internal": bool(getattr(b["event"], "internal", False))})))
     wrap("on_processing_complete", lambda b: journal.append(Op(now(), "complete", str(b["event"].source.chat_id),
                                                                mid=b["event"].message_id)))
 
@@ -138,12 +163,17 @@ class World:
     """Один шлюз Hermes с нашим плагином и скриптованным агентом на группу (процесс на группу)."""
 
     def __init__(self, config_extra: str = "", route_profile: Optional[str] = None,
-                 target_extra: str = "") -> None:
+                 target_extra: str = "", platform_lines: str = "", home: Optional[Path] = None,
+                 port: Optional[int] = None) -> None:
         """`route_profile` — имя профиля-цели маршрута `yandex_alice → профиль` (раскладка A2: плагин по симлинку и в
-        цели); `target_extra` — добавка в config цели. Без профиля голос идёт в профиле по умолчанию."""
+        цели); `target_extra` — добавка в config цели. Без профиля голос идёт в профиле по умолчанию.
+        `platform_lines` — строки в `platforms.yandex_alice` (отступ 4); `home`/`port` — свой дом и порт сцены."""
         self.config_extra = config_extra
         self.route_profile = route_profile
         self.target_extra = target_extra
+        self.platform_lines = platform_lines
+        self.home_override = home
+        self.port_override = port
         self.target_home: Optional[Path] = None
         self.journal: list = []
         self.errors: dict = {}
@@ -155,35 +185,46 @@ class World:
         asyncio.run(self._run(scenarios))
 
     async def _run(self, scenarios) -> None:
-        home = temp_home()
-        from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
+        from tests.fakes.fake_llm_provider import FakeLLMServer, Text
 
         self.script = Script(Text)
         llm = FakeLLMServer(self.script, prompt_tokens_fn=self._tokens)
         llm.start()
         try:
-            self.port, self.secret = free_port(), secrets.token_hex(32)
-            routing = ""
-            if self.route_profile:
-                routing = ("gateway:\n  multiplex_profiles: true\n  loop_watchdog: false\n  profile_routes:\n"
-                           f"    - name: alice-compat\n      platform: {PLATFORM}\n      profile: {self.route_profile}\n")
-            write_hermes_home(home, llm.base_url, extra_config=(
-                routing + "plugins:\n  enabled:\n    - yandex-alice\n"
-                f"platforms:\n  {PLATFORM}:\n    enabled: true\n    extra:\n      port: {self.port}\n" + self.config_extra))
-            self._patch_agent(home / "config.yaml")
-            with open(home / ".env", "a", encoding="utf-8") as env:   # до импорта gateway.run: он читает .env при загрузке
-                env.write(f"ALICE_PATH_SECRET={self.secret}\nALICE_SKILL_ID={SKILL}\nALICE_OWNER_USER_ID={OWNER}\n")
-            plugin_dir = install_plugin(home)
-            if self.route_profile:   # раскладка A2: профиль-цель получает тот же плагин по симлинку
-                target = self.target_home = home / "profiles" / self.route_profile
-                write_hermes_home(target, llm.base_url, extra_config=(
-                    "plugins:\n  enabled:\n    - yandex-alice\n" + self.target_extra))
-                self._patch_agent(target / "config.yaml")
-                (target / "plugins").mkdir(exist_ok=True)
-                (target / "plugins" / PLUGIN_NAME).symlink_to(plugin_dir, target_is_directory=True)
+            self.prepare(llm.base_url)
             await self._gateway(scenarios)
         finally:
             llm.stop()
+
+    @property
+    def home(self) -> Path:
+        return self.home_override or temp_home()
+
+    def prepare(self, llm_url: str) -> None:
+        """Дом шлюза: config, `.env`, плагин (и профиль-цель с симлинком, если есть маршрут)."""
+        from tests.fakes.fake_llm_provider import write_hermes_home
+
+        home = self.home
+        self.port, self.secret = self.port_override or free_port(), secrets.token_hex(32)
+        routing = ""
+        if self.route_profile:
+            routing = ("gateway:\n  multiplex_profiles: true\n  loop_watchdog: false\n  profile_routes:\n"
+                       f"    - name: alice-compat\n      platform: {PLATFORM}\n      profile: {self.route_profile}\n")
+        write_hermes_home(home, llm_url, extra_config=(
+            routing + "plugins:\n  enabled:\n    - yandex-alice\n"
+            f"platforms:\n  {PLATFORM}:\n    enabled: true\n{self.platform_lines}"
+            f"    extra:\n      port: {self.port}\n" + self.config_extra))
+        self._patch_agent(home / "config.yaml")
+        with open(home / ".env", "a", encoding="utf-8") as env:   # до импорта gateway.run: он читает .env при загрузке
+            env.write(f"ALICE_PATH_SECRET={self.secret}\nALICE_SKILL_ID={SKILL}\nALICE_OWNER_USER_ID={OWNER}\n")
+        plugin_dir = install_plugin(home)
+        if self.route_profile:   # раскладка A2: профиль-цель получает тот же плагин по симлинку
+            target = self.target_home = home / "profiles" / self.route_profile
+            write_hermes_home(target, llm_url, extra_config=(
+                "plugins:\n  enabled:\n    - yandex-alice\n" + self.target_extra))
+            self._patch_agent(target / "config.yaml")
+            (target / "plugins").mkdir(exist_ok=True)
+            (target / "plugins" / PLUGIN_NAME).symlink_to(plugin_dir, target_is_directory=True)
 
     big = False   # True: запросы с токеном `[z…]` сообщают >0.85 окна 128k и толкают Hermes к сжатию
 
@@ -195,7 +236,7 @@ class World:
         """Что `state.db` профиля-цели (иначе — дома) хранит о голосовых сессиях: счётчик Hermes и число строк."""
         import sqlite3
 
-        path = (self.target_home or temp_home()) / "state.db"
+        path = (self.target_home or self.home) / "state.db"
         if not path.exists():
             return {"state_db": "missing"}
         con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)

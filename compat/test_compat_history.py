@@ -58,6 +58,13 @@ async def sc_empty(w) -> None:
     await repeat(w, "empty_repeat")
 
 
+async def sc_error(w) -> None:
+    """Сбой провайдера: «повтори» не должен вернуть прошлый хороший ответ («Готово: hi.» после sc_tool)."""
+    w.script.add("h04", fallback=_fakes().Error(500, "scripted failure"))
+    await w.ask("error", "сбой [h04] провайдера")
+    await repeat(w, "error_repeat")
+
+
 async def sc_new(w) -> None:
     """«Новый диалог»: прошлая беседа не читается."""
     w.voice["new"] = [await w.say("новый диалог", intents=(NEW,))]
@@ -115,8 +122,8 @@ class GroupH(_Group):
     """Голос в профиле-цели маршрута (A2 с симлинком)."""
 
     ROUTE = TARGET
-    SCENARIOS = [("nothing", sc_nothing), ("plain", sc_plain), ("tool", sc_tool), ("empty", sc_empty),
-                 ("new", sc_new)]
+    SCENARIOS = [("nothing", sc_nothing), ("plain", sc_plain), ("tool", sc_tool), ("error", sc_error),
+                 ("empty", sc_empty), ("new", sc_new)]
 
     def test_nothing_to_repeat_without_a_session(self) -> None:
         self.scenario_ok("nothing")
@@ -136,6 +143,11 @@ class GroupH(_Group):
         self.scenario_ok("tool")
         self.assertEqual(self.world.voice["tool"][-1], "Готово: hi.")
         self.assertEqual(self.world.voice["tool_repeat"], ["Готово: hi."])
+
+    def test_provider_error_repeats_as_failure_not_the_old_answer(self) -> None:
+        self.scenario_ok("error")
+        self.assertEqual(self.world.voice["error"][-1], FAILED)
+        self.assertEqual(self.world.voice["error_repeat"], [FAILED])
 
     def test_empty_answer_repeats_as_failure(self) -> None:
         self.scenario_ok("empty")
