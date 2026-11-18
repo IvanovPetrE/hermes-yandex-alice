@@ -210,6 +210,24 @@ class ConnectionLimitTests(AdapterCase):
         self.fail("слот не освободился после закрытия соединения")
 
 
+class IdleConnectionTests(AdapterCase):
+    """HERMESYAND-25: молчащее соединение не держит слот лимита дольше KEEPALIVE_TIMEOUT (по умолчанию aiohttp — 3630 с)."""
+
+    async def test_a_silent_connection_is_closed_after_the_keepalive_timeout(self) -> None:
+        with mock.patch.object(adapter, "KEEPALIVE_TIMEOUT", 0.3):
+            await self.start()
+            reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
+            self.addCleanup(writer.close)
+            try:   # ничего не отправляем: сервер закрывает соединение сам
+                data = await asyncio.wait_for(reader.read(1), 3)
+            except ConnectionResetError:
+                data = b""
+            self.assertEqual(data, b"")
+
+    def test_the_production_timeout_is_120_seconds(self) -> None:
+        self.assertEqual(adapter.KEEPALIVE_TIMEOUT, 120)
+
+
 class NegativeHttpTests(AdapterCase):
     async def test_wrong_path_is_404(self):
         await self.start()

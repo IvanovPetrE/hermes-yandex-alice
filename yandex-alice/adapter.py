@@ -36,6 +36,7 @@ PLUGIN_NAME = "yandex-alice"   # каталог данных плагина: plu
 TICK_SECONDS = 60.0     # период проверки сроков (Д13, Д9)
 READ_TIMEOUT = 5.0      # с на чтение тела запроса: защита от медленной отправки
 MAX_CONNECTIONS = 20    # одновременных соединений слушателя; лишнее закрывается сразу (HERMESYAND-6)
+KEEPALIVE_TIMEOUT = 120.0   # с: молчащее соединение закрывается и освобождает слот (по умолчанию aiohttp — 3630 с)
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +222,7 @@ class AliceAdapter(BasePlatformAdapter):
         try:
             app = web.Application()
             app.router.add_post("/{tail:.*}", self._http)
-            runner = web.AppRunner(app, access_log=None)
+            runner = web.AppRunner(app, access_log=None, keepalive_timeout=KEEPALIVE_TIMEOUT)
             await runner.setup()
             # только loopback; лимит соединений — своя фабрика протоколов вместо TCPSite (в aiohttp лимита нет)
             site = await asyncio.get_running_loop().create_server(
