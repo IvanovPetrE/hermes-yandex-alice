@@ -43,6 +43,7 @@ bash compat/run.sh <hermes-checkout> <hermes-python> <P|A|B>
   `~/.hermes/installs/<key>/environments/<generation>/venv/bin/python`. Прогон идёт во временном каталоге и не трогает живой шлюз.
 - **CI:** job `compat` в `.github/workflows/tests.yml` клонирует ревизию из таблицы выше, проверяет коммит, ставит зависимости
   `uv sync --locked --python 3.14 --extra all` (команда Hermes сокращена: у них больше extras) и гоняет группы `P`, `A`, `B`.
-  **Job не запускался** (репозиторий ещё не опубликован) — проверка на этапе 9; не проверено, что
-  `import hermes_bootstrap` работает в venv, созданном `uv sync`, а не в закоммиченном окружении установленного Hermes.
+  **Job не запускался** (репозиторий ещё не опубликован) — проверка на этапе 9. Проверено чтением checkout v0.23.2: `uv.lock`
+  есть (355 пакетов, `requires-python >=3.11,<3.15`), extra `all` объявлен в `pyproject.toml`; не проверено, что `uv sync --locked`
+  проходит на раннере, и что `import hermes_bootstrap` работает в venv, созданном `uv sync`, а не в закоммиченном окружении установленного Hermes.
 - Группа `A` занимает около минуты и ~270 МБ памяти; прогон нужен после каждого обновления Hermes (`hermes update`).
