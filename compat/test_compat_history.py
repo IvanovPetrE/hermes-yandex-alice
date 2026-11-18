@@ -94,11 +94,12 @@ async def sc_compress(w) -> None:
 
 class _Group(unittest.TestCase):
     ROUTE: "str | None" = None
+    TARGET_EXTRA = ""
     SCENARIOS: list = []
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.world = harness.World(route_profile=cls.ROUTE)
+        cls.world = harness.World(route_profile=cls.ROUTE, target_extra=cls.TARGET_EXTRA)
         cls.world.run(cls.SCENARIOS)
         print(f"\n=== errors={cls.world.errors} voice={cls.world.voice} state={cls.world.state}")
 
@@ -162,6 +163,7 @@ class GroupZ(_Group):
     """Сжатие беседы на месте: «повтори» после него читает свежий ответ."""
 
     ROUTE = TARGET
+    TARGET_EXTRA = "compression:\n  protect_last_n: 2\n"   # как в пробе S7: иначе защищённый хвост не даёт сжать малую беседу
     SCENARIOS = [("compress", sc_compress)]
 
     def test_repeat_after_compression_reads_the_fresh_answer(self) -> None:
