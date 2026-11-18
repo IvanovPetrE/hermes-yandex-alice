@@ -106,6 +106,16 @@ class Final:
 
 
 @dataclass(frozen=True)
+class Recovered:
+    """Отправка вне хода с формой пометки «♻️ …:» (HERMESYAND-4). Восстановленным ответом она считается только при
+    вопросе в работе и перезапуске шлюза после него; иначе это обычная отправка вне хода (cron, фон) — в Telegram."""
+    now: float
+    conversation: str
+    text: str   # без пометки
+    raw: str    # как пришло, с пометкой
+
+
+@dataclass(frozen=True)
 class Delivery:
     """Исход отправки Telegram (S3): delivered / failed / uncertain; text и fallback — из действия Telegram."""
     now: float
@@ -258,6 +268,12 @@ def _dispatch(state: State, event: object, settings: Settings) -> tuple[State, t
         return state, ()
     if isinstance(event, Utterance):
         return _utterance(state, event, settings)
+    if isinstance(event, Recovered):
+        q = state.question
+        if event.conversation == state.conversation and q and q.restarted_at is not None:
+            return _dispatch(state, Final(now=event.now, conversation=event.conversation, text=event.text,
+                                          internal=True), settings)
+        return state, (Telegram(event.conversation, p.telegram_text(event.raw)),)
     if isinstance(event, Final):
         if event.conversation == state.conversation:
             state = replace(state, answered=True)

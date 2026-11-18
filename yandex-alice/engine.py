@@ -107,6 +107,10 @@ class Engine:
         self._apply(d.Final(now=self._wall(), conversation=conversation, text=text, internal=internal,
                             card_failed=card == ap.FAILED, approvals_off=card == ap.OFF))
 
+    def on_recovered(self, conversation: str, text: str, raw: str) -> None:
+        """Отправка вне хода с пометкой «♻️ …:»: `text` — без пометки, `raw` — как пришло. Решает машина беседы."""
+        self._apply(d.Recovered(now=self._wall(), conversation=conversation, text=text, raw=raw))
+
     def on_approval(self, conversation: str, waiting: bool) -> None:
         """Ход беседы ждёт нажатия карточки в Telegram (или перестал ждать) — Д8 «Жду подтверждения…»."""
         self._apply(d.Approval(now=self._wall(), conversation=conversation, waiting=waiting))

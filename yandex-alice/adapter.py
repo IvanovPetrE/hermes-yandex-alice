@@ -429,8 +429,8 @@ class AliceAdapter(BasePlatformAdapter):
                 self._engine.on_send(chat)
             if kind == sends.FINAL:   # метка хода: карточка не дошла / подтверждения не настроены — своя озвучка
                 self._engine.on_final(chat, text, turn[1], card=self._appr.outcome(chat))
-            elif kind == sends.RECOVERED:   # ответ из леджера Hermes после перезапуска: пометка срезается по форме (S5)
-                self._engine.on_final(chat, sends.strip_marker(text), True)
+            elif kind == sends.RECOVERED:   # форма пометки леджера Hermes (S5); ответ ли это — решает машина беседы
+                self._engine.on_recovered(chat, sends.strip_marker(text), text)
             else:   # вне хода (cron в голос, фон) и поздний итог снятого хода — в Telegram «Алиса:»; служебное и
                 # неитоговое внутри хода — нет (S6)
                 forwarded = sends.forward_text(open_turn=turn is not None, kind=kind, text=text)
