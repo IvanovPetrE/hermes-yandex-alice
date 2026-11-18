@@ -10,7 +10,7 @@ HTTP в loopback-listener, агент — скриптованный LLM из `t
 
 | Группа | Что проверяет |
 |---|---|
-| `P` | `validate_plugin_dir` манифеста, регистрация платформы (`source`, `display_tier`, `allowed_users_env`) |
+| `P` | `validate_plugin_dir` манифеста без предупреждений (`warnings == []`), регистрация платформы (`source`, `display_tier`, `allowed_users_env`) |
 | `A` | текст, инструмент, пустой ответ модели и сбой провайдера → «не получилось», уведомление «📬» не озвучивается, порядок start → итог → complete |
 | `B` | вторая фраза в занятую беседу не доходит до Hermes, гейт Р2, хук `on_processing_complete` после итога |
 | `G` | гейт Р2 при пропаже `on_processing_complete`: итог без complete; потерянные итог и complete — ход снят тиком по сроку |

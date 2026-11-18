@@ -20,6 +20,8 @@ class PluginTests(unittest.TestCase):
         failed = [(name, detail) for name, ok, detail in report.checks if not ok]
         self.assertEqual(failed, [])
         self.assertEqual(report.exit_code, 0)
+        # Предупреждения (private-import, security scan caution) тоже провал: HERMESYAND-19.
+        self.assertEqual(report.warnings, [])
 
     def test_registration(self) -> None:
         (self.home / "config.yaml").write_text("plugins:\n  enabled:\n    - yandex-alice\n", encoding="utf-8")
