@@ -358,15 +358,17 @@ class GroupR(_Group):
 
     def test_known_limitation_graceful_stop_voices_failure_but_hermes_still_resumes(self) -> None:
         """Известное ограничение (docs/PLAN.md, «Открыто»): при штатной остановке посреди хода первый запуск получает
-        `on_processing_complete(cancelled)` без итога, адаптер закрывает вопрос, и владелец слышит «Не получилось».
+        `on_processing_complete` без итога, адаптер закрывает вопрос, и владелец слышит «Не получилось».
         Hermes после запуска всё равно доводит ход (внутренний ход, заметка «CONTINUE»), но итог голосом не звучит
         (вопроса уже нет), а «повтори» его читает из истории. Ожидаемо после починки — ответ `RESUMED` сразу."""
         w = self.stop_w
         self.scenario_ok(w, "r_stop")
         st = w.state
         self.assertTrue(st["stopped_clean"])
+        # Хук завершения у первого запуска приходит без итога; исход в v0.23.2 — `success` (в пробе S5 на v0.23.1 — `cancelled`).
         self.assertIsNotNone(st["first_complete"], "хука завершения у первого запуска не было")
-        self.assertEqual(st["first_complete"].metadata["outcome"].lower().rpartition(".")[2], "cancelled")
+        self.assertFalse([op for op in w.journal if op.op == "send" and op.pid == st["first_complete"].pid
+                          and RESUMED in op.content])
         self.assertEqual(st["reply"], FAILED)
         self.assertIsNotNone(st["internal"], "после перезапуска не было внутреннего хода")
         self.assertIsNone(st["internal"].mid)
