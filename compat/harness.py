@@ -85,6 +85,8 @@ class Script:
         self.resume_notes: list[str] = []   # последние реплики пользователя с заметкой автопродолжения
         self.resume_hold = None             # threading.Event: подержать ответ на заметку
         self.resume_text = "Ответ после перезапуска."
+        self.resume_response = None         # вместо текста: например, ToolCall (агент повторяет команду после рестарта)
+        self.after_tool_text = "Готово: команда выполнена."   # ответ, когда последним пришёл результат инструмента
 
     def add(self, token: str, *responses, fallback=None) -> None:
         self.queues.setdefault(token, []).extend(responses)
@@ -122,6 +124,11 @@ class Script:
             self.resume_notes.append(text)
             if self.resume_hold is not None:
                 self.resume_hold.wait(300)
+            messages = (record.get("body") or {}).get("messages") or []
+            if self.resume_response is not None and messages and messages[-1].get("role") == "tool":
+                return self._text_cls(self.after_tool_text)   # результат повторённой команды: не вызывать её по кругу
+            if self.resume_response is not None:
+                return self.resume_response
             return self._text_cls(self.resume_text)
         for token, queue in self.queues.items():
             if f"[{token}]" in text:
@@ -166,7 +173,7 @@ class World:
 
     def __init__(self, config_extra: str = "", route_profile: Optional[str] = None,
                  target_extra: str = "", platform_lines: str = "", home: Optional[Path] = None,
-                 port: Optional[int] = None) -> None:
+                 port: Optional[int] = None, env_extra: str = "") -> None:
         """`route_profile` — имя профиля-цели маршрута `yandex_alice → профиль` (раскладка A2: плагин по симлинку и в
         цели); `target_extra` — добавка в config цели. Без профиля голос идёт в профиле по умолчанию.
         `platform_lines` — строки в `platforms.yandex_alice` (отступ 4); `home`/`port` — свой дом и порт сцены."""
@@ -174,6 +181,7 @@ class World:
         self.route_profile = route_profile
         self.target_extra = target_extra
         self.platform_lines = platform_lines
+        self.env_extra = env_extra
         self.home_override = home
         self.port_override = port
         self.target_home: Optional[Path] = None
@@ -218,7 +226,8 @@ class World:
             f"    extra:\n      port: {self.port}\n" + self.config_extra))
         self._patch_agent(home / "config.yaml")
         with open(home / ".env", "a", encoding="utf-8") as env:   # до импорта gateway.run: он читает .env при загрузке
-            env.write(f"ALICE_PATH_SECRET={self.secret}\nALICE_SKILL_ID={SKILL}\nALICE_OWNER_USER_ID={OWNER}\n")
+            env.write(f"ALICE_PATH_SECRET={self.secret}\nALICE_SKILL_ID={SKILL}\nALICE_OWNER_USER_ID={OWNER}\n"
+                      + self.env_extra)
         plugin_dir = install_plugin(home)
         if self.route_profile:   # раскладка A2: профиль-цель получает тот же плагин по симлинку
             target = self.target_home = home / "profiles" / self.route_profile

@@ -10,7 +10,7 @@
 set -euo pipefail
 
 if [ "$#" -ne 3 ]; then
-    echo "usage: $0 <hermes-checkout> <hermes-python> <P|A|B|H|N|Z|L|R>" >&2
+    echo "usage: $0 <hermes-checkout> <hermes-python> <P|A|B|H|N|Z|L|R|T>" >&2
     exit 2
 fi
 CHECKOUT=$1
@@ -25,7 +25,8 @@ case "$GROUP" in
     Z) CLS=test_compat_history.GroupZ ;;
     L) CLS=test_compat_restart.GroupL ;;
     R) CLS=test_compat_restart.GroupR ;;
-    *) echo "group must be P, A, B, H, N, Z, L or R" >&2; exit 2 ;;
+    T) CLS=test_compat_approval.GroupT ;;
+    *) echo "group must be P, A, B, H, N, Z, L, R or T" >&2; exit 2 ;;
 esac
 [ -d "$CHECKOUT/gateway" ] || { echo "not a Hermes checkout: $CHECKOUT" >&2; exit 2; }
 [ -x "$PY" ] || { echo "python not executable: $PY" >&2; exit 2; }
