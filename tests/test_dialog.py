@@ -502,6 +502,11 @@ class RecoveredTests(unittest.TestCase):
         self.assertEqual(acts, (d.Telegram(FRESH, "Алиса:\n" + MARK + "Солнечно."),))
         self.assertIsNotNone(st.question)
 
+    def test_marked_send_of_an_orphan_conversation_drops_it_from_orphans(self):
+        st = replace(restarted(), orphans=(FRESH, "conv-3"))
+        st, _ = d.step(st, recovered(conv=FRESH))
+        self.assertEqual(st.orphans, ("conv-3",))
+
 
 TURN_LOST_TG ="Алиса:\nПрошлый ответ не пришёл."
 MIN15 = 900.0

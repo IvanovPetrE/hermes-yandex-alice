@@ -273,7 +273,7 @@ def _dispatch(state: State, event: object, settings: Settings) -> tuple[State, t
         if event.conversation == state.conversation and q and q.restarted_at is not None:
             return _dispatch(state, Final(now=event.now, conversation=event.conversation, text=event.text,
                                           internal=True), settings)
-        return state, (Telegram(event.conversation, p.telegram_text(event.raw)),)
+        return _drop_orphan(state, event.conversation), (Telegram(event.conversation, p.telegram_text(event.raw)),)
     if isinstance(event, Final):
         if event.conversation == state.conversation:
             state = replace(state, answered=True)
