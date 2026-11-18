@@ -130,9 +130,10 @@ LATE_FINAL = "Поздний сорок четвёртый."
 OWNER_TG, CHAT = 5001, "5001"   # синтетические: владелец и его личный чат
 
 
-async def sc_busy_after_lost(w) -> None:
+async def sc_busy_after_lost(w, answered: bool = True) -> None:
     """Срок потерянного хода вышел (complete заглушён), но Hermes ещё занят ходом: новая фраза уходит в занятую сессию
-    (HERMESYAND-8). Известное ограничение — тест закрепляет текущую привязку, а не желаемую."""
+    (HERMESYAND-8). Известное ограничение — тест закрепляет текущую привязку, а не желаемую. `answered=False` — голос
+    ответа не дождётся (interrupt): шесть раундов «да» вместо ожидания ответа."""
     import dataclasses
 
     mute_complete(w, "[t44]")
@@ -149,13 +150,23 @@ async def sc_busy_after_lost(w) -> None:
     w.adapter._engine.tick()
     w.state["open_after_tick"] = sorted(w.adapter._open)
     w.state["second_at"] = len(w.journal)
-    await w.ask("busy2", "сорок пятый [t45] вопрос")
-    end = loop.time() + 40.0   # оба текста должны дойти до send(): позднего итога t44 и ответа на t45
+    if answered:
+        await w.ask("busy2", "сорок пятый [t45] вопрос")
+    else:
+        said = w.voice.setdefault("busy2", [])
+        said.append(await w.say("сорок пятый [t45] вопрос"))
+        for _ in range(6):
+            said.append(await w.say("да", confirm=True))
+    end = loop.time() + 40.0   # тексты должны дойти до send(): ответ на t45 и (queue) поздний итог t44
     while loop.time() < end:
         sent = " ".join(op.content for op in w.journal if op.op == "send")
-        if LATE_FINAL in sent and "Ответ сорок пятый." in sent:
+        if "Ответ сорок пятый." in sent and (LATE_FINAL in sent or not answered):
             break
         await asyncio.sleep(0.2)
+
+
+async def sc_busy_after_lost_interrupt(w) -> None:
+    await sc_busy_after_lost(w, answered=False)
 
 
 class _Group(unittest.TestCase):
@@ -290,6 +301,7 @@ class _BusyGroup(unittest.TestCase):
     Telegram — `TelegramStandin`: видно, что и в каком виде ушло владельцу."""
 
     BUSY_MODE = ""
+    SCENE = staticmethod(sc_busy_after_lost)
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -307,7 +319,7 @@ class _BusyGroup(unittest.TestCase):
                 env_extra=(f"TELEGRAM_BOT_TOKEN={cls.standin.token}\nTELEGRAM_ALLOWED_USERS={OWNER_TG}\n"
                            "HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=1\nHERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS=0\n"
                            f"ALICE_TELEGRAM_CHAT={CHAT}\nALICE_TELEGRAM_OWNER_ID={OWNER_TG}\n"))
-            cls.world.run([("busy_after_lost", sc_busy_after_lost)])
+            cls.world.run([("busy_after_lost", cls.SCENE)])
             cls.telegram = [v.text for v in cls.standin.visible(CHAT)]
             print(cls.standin.describe())
         finally:
@@ -331,8 +343,6 @@ class _BusyGroup(unittest.TestCase):
         self.assertEqual(len(self.world.state["open_before_tick"]), 1, "до тика хода не было: проверка была бы пустой")
         self.assertEqual(self.world.state["open_after_tick"], [], "тик не снял запись хода в адаптере")
         self.assertEqual(len(self._mids("[t45]")), 1, "фраза после срока не дошла до Hermes")
-        self.assertIn(LATE_FINAL, " ".join(op.content for op in self.world.journal if op.op == "send"),
-                      "поздний итог t44 не дошёл до адаптера: сцена ничего не доказывает")
 
 
 class GroupQ(_BusyGroup):
@@ -345,6 +355,8 @@ class GroupQ(_BusyGroup):
         """Факт v0.23.2: итог занятого хода и ответ на вторую фразу приходят с `reply_to` ПЕРВОГО хода (снятого тиком),
         поэтому оба — поздние итоги: в Telegram с подписью, голосом звучит «Не получилось»."""
         self.check_common()
+        self.assertIn(LATE_FINAL, " ".join(op.content for op in self.world.journal if op.op == "send"),
+                      "поздний итог t44 не дошёл до адаптера: сцена ничего не доказывает")
         second = [op for op in self.world.journal if op.op == "send" and "Ответ сорок пятый." in op.content]
         (first_mid,) = self._mids("[t44]")
         self.assertEqual([op.reply_to for op in second], [first_mid], "ответ на вторую фразу пришёл с reply_to первого хода")
@@ -357,13 +369,26 @@ class GroupQ(_BusyGroup):
 
 
 class GroupI(_BusyGroup):
-    """То же при `busy_input_mode: interrupt`. Утверждения уточняются по первому прогону на сервере (в S1 для этого
-    режима: «↪ Redirected…» с `reply_to` второй фразы, хуки только у первой)."""
+    """То же при `busy_input_mode: interrupt` (режим боевого сервера). Известное ограничение (HERMESYAND-8, прогон v0.23.2):
+    Hermes «перенаправляет» занятый ход второй фразой — «↪ Redirected…» и ответ приходят с `reply_to` второй фразы, но
+    хуков `on_processing_start/complete` у неё нет. Ответ уходит в Telegram (с англ. подсказкой Hermes), вопрос не
+    закрывается, голос повторяет «ещё не готово». Исправление — отдельная заявка Intake."""
 
     BUSY_MODE = "interrupt"
+    SCENE = staticmethod(sc_busy_after_lost_interrupt)
 
-    def test_second_phrase_reaches_hermes(self) -> None:
+    def test_redirected_second_phrase_is_answered_in_telegram_but_voice_keeps_waiting(self) -> None:
         self.check_common()
+        (second_mid,) = self._mids("[t45]")
+        hooks = [op for op in self.world.journal if op.op in ("start", "complete") and op.mid == second_mid]
+        self.assertFalse(hooks, "у второй фразы появились хуки хода: ограничение исчезло, обновить тест и документы")
+        sends = [op for op in self.world.journal if op.op == "send" and op.reply_to == second_mid]
+        self.assertTrue(any("Redirected" in op.content for op in sends), "нет «↪ Redirected…»: сцена ничего не доказывает")
+        finals = [op for op in sends if "Ответ сорок пятый." in op.content]
+        self.assertEqual([op.metadata.get("notify") for op in finals], [True], "ответ второй фразы — один итог с notify")
+        voice = self.world.voice["busy2"]
+        self.assertTrue(all(reply in harness.WAITING for reply in voice), f"голос ответил по существу: {voice}")
+        self.assertIn("Алиса:\nОтвет сорок пятый.", self.plain_telegram(), "ответ не пришёл в Telegram")
 
 
 if __name__ == "__main__":
