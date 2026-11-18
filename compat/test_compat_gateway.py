@@ -108,15 +108,19 @@ async def sc_lost_turn(w) -> None:
     mute_complete(w, "[t42]")
     mute_final(w, LOST_FINAL)
     engine = w.adapter._engine
-    engine.settings = dataclasses.replace(engine.settings, turn_lost_after=2.0)
+    # срок больше бюджета ответа (3,5 с): иначе ход снимет уже событие Expired, и тик проверялся бы вхолостую
+    engine.settings = dataclasses.replace(engine.settings, turn_lost_after=5.0)
     w.script.add("t42", _fakes().Text(LOST_FINAL))
     w.script.add("t43", _fakes().Text("Ответ сорок третий."))
+    loop = asyncio.get_running_loop()
+    asked = loop.time()
     said = w.voice.setdefault("lost1", [])
-    said.append(await w.say("сорок второй [t42] вопрос"))   # бюджет 3,5 с > срока 2 с
-    end = asyncio.get_running_loop().time() + 15.0          # ход в Hermes закончился: итог заглушён
-    while not w.state["muted_finals"] and asyncio.get_running_loop().time() < end:
+    said.append(await w.say("сорок второй [t42] вопрос"))
+    end = asked + 15.0                                      # ход в Hermes закончился: итог заглушён
+    while not w.state["muted_finals"] and loop.time() < end:
         await asyncio.sleep(0.1)
     w.state["open_before_tick"] = sorted(w.adapter._open)
+    await asyncio.sleep(max(0.0, asked + 6.0 - loop.time()))   # срок вышел, событий шлюза не было
     w.adapter._engine.tick()
     w.state["open_after_tick"] = sorted(w.adapter._open)
     await w.ask("lost2", "сорок третий [t43] вопрос")
