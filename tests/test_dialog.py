@@ -287,11 +287,34 @@ class ReadingTests(unittest.TestCase):
             st, acts = d.step(st, utter("дальше", "hya.next", turn=f"s1-{i}"))
             self.assertEqual(acts, (d.Say(sentence(i) + (" Продолжить?" if i < 12 else "")),))
 
-    def test_no_sends_the_rest_to_telegram(self):
+    def test_no_sends_the_whole_answer_to_telegram(self):
         st, acts = d.step(reading(), utter("нет", NO))
-        self.assertEqual(acts, (d.Telegram(CONV, f"Алиса:\n{S2} {S3}", (S2, S3)),
-                                d.Say("Хорошо, остальное пришлю в Телеграм.")))
+        self.assertEqual(acts, (d.Telegram(CONV, f"Алиса:\n{S1} {S2} {S3}", (S1, S2, S3)),
+                                d.Say("Ответ пришлю в Телеграм.")))
         self.assertEqual(st.prompt, d.IDLE)
+
+    def test_no_after_next_sends_the_original_late_answer_with_telegram_details(self):
+        voice = f"{S1} {S2} {S3}"
+        raw = f"ГОЛОС: {voice}\nТЕЛЕГРАМ: Вот **детали**"
+        st, acts = d.step(later(), d.Final(now=95.0, conversation=CONV, text=raw))
+        self.assertEqual(acts, (d.Telegram(CONV, "Алиса:\nВот **детали**"),))
+        st, acts = d.step(st, utter("да", YES, turn="late-1"))
+        self.assertEqual(acts, (d.Say(S1 + " Продолжить?"),))
+        st, acts = d.step(st, utter("дальше", "hya.next", turn="late-2"))
+        self.assertEqual(acts, (d.Say(S2 + " Продолжить?"),))
+        refusal = utter("нет", NO, turn="late-3")
+        st, acts = d.step(st, refusal)
+        self.assertEqual(acts, (d.Telegram(CONV, f"Алиса:\n{voice}\nВот **детали**", (S1, S2, S3)),
+                                d.Say("Ответ пришлю в Телеграм.")))
+        self.assertEqual(d.step(st, refusal)[1], (d.Say("Ответ пришлю в Телеграм."),))
+
+    def test_no_during_recall_preserves_original_formatting(self):
+        st, _ = d.step(answered(), utter("повтори", REPEAT, turn="recall-1"))
+        raw = f"**{S1}**\n\n{S2}"
+        st, _ = d.step(st, d.Recalled(now=101.0, text=raw))
+        st, acts = d.step(st, utter("нет", NO, turn="recall-2"))
+        self.assertEqual(acts, (d.Telegram(CONV, "Алиса:\n" + raw, (S1, S2)),
+                                d.Say("Ответ пришлю в Телеграм.")))
 
     def test_no_without_telegram_drops_the_rest(self):
         off = d.Settings(telegram=False)
@@ -1054,7 +1077,8 @@ TABLE = {
         "подожду": VOICE, "позже": say(WAITS_T), "в телеграм": TG_ANS, "дальше": VOICE,
         "помощь": say(HELP_TEXT + " " + TG_FAILED), "повтори": say(TG_FAILED)}),
     "продолжить?": (reading, {
-        "да": NEXT, "нет": REST, "без интента": ask("а завтра?"), "пусто": say("Продолжить?"),
+        "да": NEXT, "нет": (d.Telegram(CONV, f"Алиса:\n{S1} {S2} {S3}", (S1, S2, S3)),
+                             d.Say("Ответ пришлю в Телеграм.")), "без интента": ask("а завтра?"), "пусто": say("Продолжить?"),
         "отклонённая": say(REJECT), "скинь": NEXT, "прошлый": NEXT,
         "новый": (d.Telegram(CONV, f"Алиса:\n{S2} {S3}", (S2, S3)), d.Say(NEW_TG_T)), "подожду": NEXT,
         "позже": REST, "в телеграм": REST, "дальше": NEXT, "помощь": say(HELP_TEXT + " Продолжить?"),
