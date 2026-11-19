@@ -150,10 +150,10 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
     async def test_an_old_unclaimed_answer_is_dropped_on_tick_and_ready_at_is_wall_time(self) -> None:
         h = Harness(budget=0.05)
         await h.engine.handle(rq("вопрос"))
-        h.clock = 2000.0
+        h.clock = 1800.0   # меньше срока потерянного хода от Ask (HERMESYAND-24)
         h.engine.on_final(h.conv, "Ответ", False)
-        self.assertEqual(h.engine.state.answer.ready_at, 2000.0)
-        h.clock = 2000.0 + SETTINGS.unclaimed_ttl
+        self.assertEqual(h.engine.state.answer.ready_at, 1800.0)
+        h.clock = 1800.0 + SETTINGS.unclaimed_ttl
         h.engine.tick()
         self.assertIsNone(h.engine.state.answer)   # Telegram выключен: ответ удалён, отправки нет (принято владельцем)
 
@@ -362,6 +362,18 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(h.asks[-1:], [(h.conv, "второй")])
         h.engine.on_final(h.conv, "Ответ", False)
         self.assertEqual(await task, "Ответ")
+
+    async def test_a_restarted_internal_turn_without_complete_is_closed_after_the_deadline(self) -> None:
+        """HERMESYAND-24: Hermes дозапустил ход после перезапуска шлюза, а он завис — вопрос не висит вечно."""
+        h = Harness(state=d.State(conversation="saved-1", question=d.Question(asked_at=990.0), last_owner_at=990.0))
+        h.engine.on_gateway_started()
+        h.engine.on_turn_start("saved-1", None, True)   # complete и итога не будет
+        h.clock += 899
+        h.engine.tick()
+        self.assertIsNotNone(h.engine.state.question)
+        h.clock += 2   # срок потерянного хода — 900 с от старта внутреннего хода
+        h.engine.tick()
+        self.assertIsNone(h.engine.state.question)
 
     async def test_a_turn_with_a_final_but_no_complete_does_not_block(self) -> None:
         """HERMESYAND-3: итог был, complete не пришёл — следующая фраза уходит агенту, а не падает на гейте."""

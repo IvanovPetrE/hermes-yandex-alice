@@ -219,7 +219,7 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual((acts, st.conversation), ((d.Say("Слушаю."),), FRESH))
 
     def test_launch_with_question_in_work_keeps_the_dialog_and_offers_to_wait(self):
-        st, acts = d.step(later(), launch(now=94.0 + 3 * HOUR))
+        st, acts = d.step(later(), launch(now=94.0 + 600.0))   # меньше срока потерянного хода (HERMESYAND-24)
         self.assertEqual(acts, (d.Say("Ещё не готово. Подождёте?"),))
         self.assertEqual((st.conversation, st.prompt), (CONV, d.WAIT))
 
@@ -595,8 +595,43 @@ class LostTurnTests(unittest.TestCase):
         self.assertIsNone(st.question)
         self.assertEqual((st.announce, st.prompt, st.wait_round), ("", d.IDLE, 0))   # без озвучки
 
-    def test_a_question_whose_turn_never_started_has_no_deadline(self):
-        st, acts = d.step(later(), d.Tick(now=90.0 + 2 * HOUR))
+    def test_a_question_whose_turn_never_started_is_closed_fifteen_minutes_after_the_ask(self):
+        """HERMESYAND-24: on_processing_start не пришёл — срок идёт от Ask (asked_at = 90 с)."""
+        st, acts = d.step(later(), d.Tick(now=90.0 + MIN15 - 1))
+        self.assertEqual((acts, st.question is not None), ((), True))
+        st, acts = d.step(later(), d.Tick(now=90.0 + MIN15))
+        self.assertEqual(acts, (d.DropTurn(CONV), d.Telegram(CONV, TURN_LOST_TG)))
+        self.assertIsNone(st.question)
+        self.assertEqual((st.announce, st.prompt, st.wait_round), ("", d.IDLE, 0))   # без озвучки
+
+    def test_a_phrase_after_the_deadline_of_a_turn_that_never_started_goes_to_the_agent(self):
+        st, acts = d.step(later(), utter("а завтра?", now=90.0 + MIN15, turn="s1-9"))
+        self.assertEqual(acts, (d.DropTurn(CONV), d.Telegram(CONV, TURN_LOST_TG), d.Ask(CONV, "а завтра?"), d.Hold()))
+        self.assertIsNotNone(st.question)
+
+    def test_an_internal_turn_after_a_restart_is_closed_fifteen_minutes_after_it_started(self):
+        """HERMESYAND-24: дозапущенный Hermes внутренний ход завис без complete — Д9 не действует, срок идёт от его старта."""
+        st = restarted()
+        st, _ = d.step(st, d.InternalStarted(now=1004.5, conversation=CONV))
+        st, _ = d.step(st, d.TurnAlive(now=1004.5, conversation=CONV))
+        st, acts = d.step(st, d.Tick(now=1004.5 + MIN15 - 1))
+        self.assertEqual((acts, st.question is not None), ((), True))
+        st, acts = d.step(st, d.Tick(now=1004.5 + MIN15))
+        self.assertEqual(acts, (d.DropTurn(CONV), d.Telegram(CONV, TURN_LOST_TG)))
+        self.assertIsNone(st.question)
+        self.assertEqual((st.announce, st.prompt, st.wait_round), ("", d.IDLE, 0))   # без озвучки
+
+    def test_a_sign_of_life_moves_the_deadline_of_a_restarted_internal_turn(self):
+        st, _ = d.step(restarted(), d.InternalStarted(now=1004.5, conversation=CONV))
+        st, _ = d.step(st, d.TurnAlive(now=1004.5, conversation=CONV))
+        st, _ = d.step(st, d.TurnAlive(now=1500.0, conversation=CONV))
+        st, acts = d.step(st, d.Tick(now=1500.0 + MIN15 - 1))
+        self.assertEqual(acts, ())
+        _, acts = d.step(st, d.Tick(now=1500.0 + MIN15))
+        self.assertEqual(acts[:1], (d.DropTurn(CONV),))
+
+    def test_a_restart_without_an_internal_turn_is_still_ruled_by_d9_only(self):
+        st, acts = d.step(restarted(), d.Tick(now=90.0 + MIN15))   # старый asked_at, но шлюз стартовал в 1000 с
         self.assertEqual((acts, st.question is not None), ((), True))
 
     def test_any_sign_of_life_moves_the_deadline(self):
@@ -616,10 +651,14 @@ class LostTurnTests(unittest.TestCase):
         _, acts = d.step(st, d.Tick(now=8000.0 + MIN15))
         self.assertEqual(acts[0], d.DropTurn(CONV))
 
-    def test_approval_end_does_not_start_a_clock_for_a_turn_that_never_started(self):
-        st, _ = d.step(later(), d.Approval(now=100.0, conversation=CONV, waiting=False))
-        _, acts = d.step(st, d.Tick(now=100.0 + MIN15))
-        self.assertEqual(acts, ())
+    def test_approval_end_starts_the_clock_even_for_a_turn_without_a_start_event(self):
+        """HERMESYAND-24: ожидание подтверждения значит, что ход есть; отсчёт идёт от нажатия, а не от старого Ask."""
+        st, _ = d.step(later(), d.Approval(now=100.0, conversation=CONV, waiting=True))
+        st, _ = d.step(st, d.Approval(now=5000.0, conversation=CONV, waiting=False))
+        st, acts = d.step(st, d.Tick(now=5000.0 + MIN15 - 1))
+        self.assertEqual((acts, st.question is not None), ((), True))
+        _, acts = d.step(st, d.Tick(now=5000.0 + MIN15))
+        self.assertEqual(acts[:1], (d.DropTurn(CONV),))
 
     def test_after_a_gateway_start_d9_rules_and_this_deadline_does_not(self):
         st, _ = d.step(started(), d.GatewayStarted(now=200.0))
