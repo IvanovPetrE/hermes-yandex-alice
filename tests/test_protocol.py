@@ -1,4 +1,4 @@
-"""Тесты чистой логики плагина; Hermes не нужен. Часть перенесена из old-bridge."""
+"""Тесты чистой логики плагина; Hermes не нужен."""
 import json
 import sys
 import unittest
@@ -343,7 +343,7 @@ class IntentTests(unittest.TestCase):
                 self.assertEqual(p.intents({"intents": {name: {"slots": {}}}}), ("valid", (name,)))
 
     def test_unknown_names_and_slots_are_dropped(self):
-        nlu = {"intents": {"bridge.wait": {}, "hya.wait": {"slots": {"x": {"value": "секрет"}}}, "YANDEX.REJECT": "x"}}
+        nlu = {"intents": {"other.wait": {}, "hya.wait": {"slots": {"x": {"value": "секрет"}}}, "YANDEX.REJECT": "x"}}
         self.assertEqual(p.intents(nlu), ("valid", ("hya.wait",)))
 
     def test_malformed_or_absent_nlu(self):
