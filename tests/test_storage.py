@@ -48,6 +48,38 @@ class DecodeTests(unittest.TestCase):
                 self.assertIsNone(storage.decode(text))
 
 
+class ReadingSnapshotTests(unittest.TestCase):
+    def test_older_snapshot_after_page_two_sends_all_available_parts(self):
+        old = _good()
+        old["state"].pop("reading_whole", None)
+        old["state"].update(reading=["Раз.", "Два.", "Три."], reading_pos=1, announce="", notice="")
+        st = storage.decode(json.dumps(old))
+        event = d.Utterance(now=100, turn_id="no", text="нет", intents=("YANDEX.REJECT",))
+        _, acts = d.step(st, event)
+        self.assertEqual(acts, (d.Telegram("c1", "Алиса:\nРаз. Два. Три.", ("Раз.", "Два.", "Три.")),
+                                d.Say("Ответ пришлю в Телеграм.")))
+
+    def test_full_text_round_trip_and_retention(self):
+        base = d.State(conversation="c1", prompt=d.CONTINUE, reading=("Раз.", "Два."),
+                       reading_whole="Алиса:\n**Раз. Два.**", last_owner_at=100)
+        self.assertEqual(storage.decode(storage.encode(base)), base)
+        for event in (d.Tick(now=100 + 86400),
+                      d.Utterance(now=101, turn_id="s1-1", text="", launch=True),
+                      d.Utterance(now=101, turn_id="s1-1", text="да", intents=("YANDEX.CONFIRM",)),
+                      d.Utterance(now=101, turn_id="s1-1", text="новая тема"),
+                      d.Utterance(now=101, turn_id="s1-1", text="новый диалог", intents=("hya.dialog.new",), fresh_id="c2")):
+            with self.subTest(event=event):
+                st, _ = d.step(base, event)
+                snapshot = json.loads(storage.encode(st))["state"]
+                self.assertNotIn("reading_whole", snapshot)
+                self.assertNotIn("**Раз.", str(snapshot))
+
+    def test_explicit_null_full_text_is_invalid(self):
+        bad = _good()
+        bad["state"]["reading_whole"] = None
+        self.assertIsNone(storage.decode(json.dumps(bad)))
+
+
 class AliveAtTests(unittest.TestCase):
     """HERMESYAND-3: признак жизни хода — в снимке; снимок прежней выкладки (без поля) читается, а не обнуляется."""
 

@@ -31,19 +31,22 @@ STR, FLOAT, INT, BOOL, TEXTS, FLOATS = "str", "float", "int", "bool", "texts", "
 OPT_FLOAT = "float?"
 QUESTION_FIELDS = {"asked_at": FLOAT, "approval": BOOL, "to_telegram": BOOL, "restarted_at": OPT_FLOAT,
                    "internal_seen": BOOL, "alive_at": OPT_FLOAT}
-# Поля, добавленные без смены VERSION: в снимке прежней выкладки их нет — читаются как None (HERMESYAND-3).
-_ADDED = frozenset({"alive_at", "lost_late"})   # lost_late — HERMESYAND-5; логическое, без ключа читается как False
+# Поля, добавленные без смены VERSION: старые снимки получают значения по умолчанию из dataclass.
+_ADDED = frozenset({"alive_at", "lost_late", "reading_whole"})
 ANSWER_FIELDS = {"parts": TEXTS, "telegram": STR, "whole": STR, "ready_at": FLOAT, "undelivered": BOOL,
                  "offered": BOOL}
 STATE_FIELDS = {"conversation": STR, "question": QUESTION_FIELDS, "answer": ANSWER_FIELDS, "holding": STR,
                 "prompt": STR, "wait_round": INT, "held": STR, "orphans": TEXTS, "last_owner_at": OPT_FLOAT,
                 "reading": TEXTS, "reading_pos": INT, "last_said": STR, "announce": STR, "notice": STR,
                 "asks": FLOATS, "last_turn": STR, "last_reply": STR, "answered": BOOL,
-                "lost_late": BOOL}
+                "lost_late": BOOL, "reading_whole": STR}
 
 
 def encode(state: d.State) -> str:
-    return json.dumps({"v": VERSION, "state": asdict(state)}, ensure_ascii=False)
+    fields = asdict(state)
+    if not state.reading_whole:
+        del fields["reading_whole"]
+    return json.dumps({"v": VERSION, "state": fields}, ensure_ascii=False)
 
 
 class _Bad(Exception):
@@ -79,8 +82,9 @@ def _record(cls, fields: dict, raw):
         raise _Bad
     values = {}
     for name, kind in fields.items():
-        # нет ключа — только у полей из _ADDED: у числовых тип допускает None, логическое читается как False
-        item = raw.get(name, False if kind == BOOL else None)
+        if name in _ADDED and name not in raw:
+            continue  # значение по умолчанию задаёт dataclass
+        item = raw[name]
         if isinstance(kind, dict):
             values[name] = None if item is None else _record(d.Question if kind is QUESTION_FIELDS else d.Answer,
                                                              kind, item)

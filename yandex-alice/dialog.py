@@ -68,6 +68,7 @@ class State:
     last_reply: str = ""               # что ей ответили; "" — ответ ещё готовится (удержание)
     answered: bool = False             # в текущей беседе был итог: пустая история при «повтори» — сбой, а не «нечего» (S7)
     lost_late: bool = False            # Д9 сказала «потерялся»: поздний внутренний итог — в Telegram, не ответ на новый вопрос
+    reading_whole: str = ""            # полный текст Telegram на время чтения по частям
 
 
 # --- события -------------------------------------------------------------------------------------------------------
@@ -212,6 +213,8 @@ class RecallLast:
 
 def step(state: State, event: object, settings: Settings = Settings()) -> tuple[State, tuple[object, ...]]:
     st, acts = _step(state, event, settings)
+    if st.reading_whole and (st.prompt != CONTINUE or not settings.telegram):
+        st = replace(st, reading_whole="")
     if not settings.telegram:   # Telegram не настроен — отправок нет (П-OFF); тексты голоса это уже учли
         acts = tuple(a for a in acts if not isinstance(a, Telegram))
     return st, acts
@@ -389,7 +392,7 @@ def _recalled(st: State, ev: Recalled) -> tuple[State, tuple[object, ...]]:
     parts = tuple(p.spoken(ev.text)) if ev.text else ()
     if not parts:   # текста нет: итог в беседе был — прочитать не удалось (Р-S7-3), не было — повторять нечего
         return _say(st, p.REPLY_FAILED if st.answered else p.REPLY_NOTHING_TO_REPEAT)
-    return _part(st, parts, 0)
+    return _part(st, parts, 0, reading_whole=p.whole_text(ev.text))
 
 
 def _part(st: State, parts: tuple[str, ...], pos: int, **changes: object) -> tuple[State, tuple[object, ...]]:
@@ -401,7 +404,7 @@ def _part(st: State, parts: tuple[str, ...], pos: int, **changes: object) -> tup
 
 def _voice(st: State, ans: Answer) -> tuple[State, tuple[object, ...]]:
     """Озвучить ответ; подробности («ТЕЛЕГРАМ:», ссылка, текст ошибки) — в Telegram при озвучке."""
-    st, acts = _part(st, ans.parts, 0, answer=None)
+    st, acts = _part(st, ans.parts, 0, answer=None, reading_whole=ans.whole)
     return st, ((Telegram(st.conversation, ans.telegram),) if ans.telegram else ()) + acts
 
 
@@ -410,17 +413,24 @@ def _rest(st: State) -> tuple[str, ...]:
 
 
 def _row_continue(st: State, ev: Utterance, k: str, settings: Settings) -> tuple[State, tuple[object, ...]] | None:
-    """«Продолжить?» (Д2): «да»/«дальше» — следующая часть; «нет» — остаток в Telegram (исключение из Р3);
+    """«Продолжить?» (Д2): «да»/«дальше» — следующая часть; «нет» — полный ответ в Telegram;
     «повтори» — текущая часть (О1); реплика без интента — агенту (None: разбор как в обычной беседе)."""
     if k in _SAY_YES:
         return _part(st, st.reading, st.reading_pos + 1)
     if k in _SAY_NO or k == p.INTENT_TELEGRAM:
-        rest = _rest(st)
-        st = replace(st, prompt=IDLE, reading=(), reading_pos=0)
+        finished = replace(st, prompt=IDLE, reading=(), reading_pos=0)
         if not settings.telegram:
-            return _say(st, p.REPLY_OK)
-        st, acts = _say(st, p.REPLY_REST_IN_TELEGRAM)
-        return st, (Telegram(st.conversation, p.telegram_text(" ".join(rest)), rest),) + acts
+            return _say(finished, p.REPLY_OK)
+        if k == p.YANDEX_REJECT:
+            parts = st.reading
+            text = st.reading_whole or p.telegram_text(" ".join(parts))  # снимок прежней версии
+            reply = p.REPLY_IN_TELEGRAM
+        else:
+            parts = _rest(st)
+            text = p.telegram_text(" ".join(parts))
+            reply = p.REPLY_REST_IN_TELEGRAM
+        st, acts = _say(finished, reply)
+        return st, (Telegram(st.conversation, text, parts),) + acts
     if k == p.YANDEX_REPEAT:
         return _part(st, st.reading, st.reading_pos)
     if k == p.YANDEX_HELP:
