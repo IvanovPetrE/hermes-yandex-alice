@@ -33,7 +33,7 @@ class Question:
     to_telegram: bool = False          # владелец попросил «пришли в Телеграм» — итог уходит туда
     restarted_at: float | None = None  # шлюз стартовал, пока вопрос был в работе (Д9)
     internal_seen: bool = False        # после старта Hermes дозапустил внутренний ход (S5)
-    alive_at: float | None = None      # последний признак жизни хода (старт, отправка, конец ожидания); None — хода нет
+    alive_at: float | None = None      # последний признак жизни хода (старт, отправка, конец ожидания); None — старт не пришёл, срок от asked_at
 
 
 @dataclass(frozen=True)
@@ -231,10 +231,11 @@ def _clock(st: State, now: float, settings: Settings) -> tuple[State, tuple[obje
     q = st.question
     if q and q.restarted_at is not None and not q.internal_seen and now - q.restarted_at >= settings.lost_after:
         st = replace(st, question=None, announce=p.REPLY_LOST, wait_round=0, lost_late=True)
-    # Срок идёт только у начатого хода (`alive_at` ставит его старт): вопрос без хода гейт Р2 не держит. После старта
-    # шлюза правит Д9, на ожидании подтверждения (Д8) отсчёт стоит.
-    lost = bool(q and q.alive_at is not None and q.restarted_at is None and not q.approval
-                and now - q.alive_at >= settings.turn_lost_after)
+    # Срок идёт от последнего признака жизни хода (`alive_at`), а если старт хода не пришёл — от Ask (`asked_at`,
+    # HERMESYAND-24). После старта шлюза правит Д9, пока Hermes не дозапустил внутренний ход; дозапущенный ход
+    # (`internal_seen`) живёт по сроку от своего старта. На ожидании подтверждения (Д8) отсчёт стоит.
+    lost = bool(q and (q.restarted_at is None or q.internal_seen) and not q.approval
+                and now - (q.asked_at if q.alive_at is None else q.alive_at) >= settings.turn_lost_after)
     if lost:   # HERMESYAND-3: тихо, без озвучки; фраза, на которой это случилось, идёт агенту обычным порядком
         st = replace(st, question=None, wait_round=0)
         acts += (DropTurn(st.conversation), Telegram(st.conversation, p.telegram_text(p.REPLY_TURN_LOST)))
@@ -253,6 +254,10 @@ def _clock(st: State, now: float, settings: Settings) -> tuple[State, tuple[obje
 
 
 def _step(state: State, event: object, settings: Settings) -> tuple[State, tuple[object, ...]]:
+    if isinstance(event, GatewayStarted):   # простой шлюза не считается ходом: сначала рестарт (дальше правит Д9), потом часы
+        state, acts = _dispatch(state, event, settings)
+        state, timed = _clock(state, event.now, settings)
+        return state, timed + acts
     state, timed = _clock(state, getattr(event, "now"), settings)
     state, acts = _dispatch(state, event, settings)
     return state, timed + acts
@@ -264,7 +269,8 @@ def _dispatch(state: State, event: object, settings: Settings) -> tuple[State, t
         return replace(state, question=q, holding=""), ()
     if isinstance(event, InternalStarted):
         if event.conversation == state.conversation and state.question:
-            return replace(state, question=replace(state.question, internal_seen=True)), ()
+            # старт внутреннего хода — признак жизни: срок идёт от него, а не от давнего Ask (HERMESYAND-24)
+            return replace(state, question=replace(state.question, internal_seen=True, alive_at=event.now)), ()
         return state, ()
     if isinstance(event, TurnAlive):
         if event.conversation == state.conversation and state.question:
@@ -293,7 +299,7 @@ def _dispatch(state: State, event: object, settings: Settings) -> tuple[State, t
     if isinstance(event, Approval):
         if event.conversation == state.conversation and state.question:
             q = replace(state.question, approval=event.waiting)
-            if not event.waiting and q.alive_at is not None:   # отсчёт стоял на ожидании — с нажатия заново
+            if not event.waiting:   # отсчёт стоял на ожидании — с нажатия заново (ожидание значит, что ход есть)
                 q = replace(q, alive_at=event.now)
             return replace(state, question=q), ()
         return state, ()
