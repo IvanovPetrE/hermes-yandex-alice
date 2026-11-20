@@ -518,6 +518,64 @@ class LostTurnTests(AdapterCase):
         self.assertGreaterEqual(ad._engine.state.question.alive_at, started + 600)
 
 
+class FirstTurnOnlyGateway(HoldGateway):
+    """busy_input_mode: interrupt (compat, группа I): первая фраза открывает ход и виснет; следующую Hermes отдаёт
+    перенаправленным ходом без хуков start/complete, отправки тест подаёт сам."""
+
+    async def __call__(self, ad, event):
+        self.events.append(event)
+        if len(self.events) == 1:
+            await ad.on_processing_start(event)
+
+
+class RedirectedPhraseTests(AdapterCase):
+    """HERMESYAND-26: фраза после срока потерянного хода ушла в занятую сессию; итог с её reply_to и notify=True —
+    ответ на текущий вопрос голосом, подсказка занятой сессии с тем же reply_to без notify — ни голоса, ни Telegram."""
+
+    REDIRECTED = "↪ Redirected current run to your new message."
+
+    async def redirect(self):
+        sent = LostTurnTests.telegram(self)
+        ad = await self.start(gateway=FirstTurnOnlyGateway())
+        ad._engine._budget = 0.1
+        await self.say(QUESTION)
+        LostTurnTests.later(ad, 901)
+        ad._engine.tick()
+        self.assertTrue(await hs.eventually(lambda: "Алиса:\nПрошлый ответ не пришёл." in sent))
+        self.assertEqual((await self.say("а завтра?", message=2))[0],
+                         "Вопрос принят. Спросите ответ позже или готовы подождать?")
+        self.assertTrue(await hs.eventually(lambda: len(self.gateway.events) == 2, timeout=0.5))
+        return ad, sent, self.gateway.events[1]
+
+    async def beacon(self, ad, sent, chat):
+        """Отправка вне хода доходит до Telegram по той же очереди: всё, что ушло раньше неё, уже в `sent`."""
+        await ad.send(chat, "Маяк.", reply_to=None, metadata={"notify": True})
+        self.assertTrue(await hs.eventually(lambda: any("Маяк." in s for s in sent)))
+
+    async def test_a_final_anchored_to_the_question_without_a_turn_is_the_voice_answer(self):
+        ad, sent, new = await self.redirect()
+        chat = new.source.chat_id
+        await ad.send(chat, "Ответ сорок пятый.", reply_to=new.message_id, metadata={"notify": True})
+        self.assertEqual(await self.say("да", message=3), ("Ответ сорок пятый.", False))
+        await self.beacon(ad, sent, chat)
+        self.assertFalse(any("Ответ сорок пятый." in s for s in sent))
+
+    async def test_the_busy_notice_anchored_to_the_question_is_dropped(self):
+        ad, sent, new = await self.redirect()
+        chat = new.source.chat_id
+        await ad.send(chat, self.REDIRECTED, reply_to=new.message_id, metadata={})
+        await self.beacon(ad, sent, chat)
+        self.assertFalse(any("Redirected" in s for s in sent))
+        self.assertIsNotNone(ad._engine.state.question)
+
+    async def test_a_final_with_another_anchor_still_goes_to_telegram(self):
+        ad, sent, new = await self.redirect()
+        chat = new.source.chat_id
+        await ad.send(chat, "Чужой итог.", reply_to="alice-elsewhere", metadata={"notify": True})
+        self.assertTrue(await hs.eventually(lambda: any("Чужой итог." in s for s in sent)))
+        self.assertIsNotNone(ad._engine.state.question)
+
+
 class RecoveredSendTests(AdapterCase):
     """HERMESYAND-4: пометка «♻️ …:» у отправки вне хода — восстановленный ответ только при вопросе в работе и
     перезапуске шлюза после него; иначе это обычная отправка вне хода (Telegram, вопрос не закрыт)."""
