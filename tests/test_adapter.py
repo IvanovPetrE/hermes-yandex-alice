@@ -430,6 +430,51 @@ class LostTurnTests(AdapterCase):
         real = ad._engine._wall
         ad._engine._wall = lambda: real() + seconds
 
+    async def test_a_late_final_without_start_reaches_telegram_during_the_next_turn(self):
+        class NoStartGateway(HoldGateway):
+            async def __call__(self, ad, event):
+                self.events.append(event)
+
+        sent = self.telegram()
+        ad = await self.start(gateway=NoStartGateway())
+        ad._engine._budget = 0.1
+        await self.say(QUESTION)
+        (old,) = self.gateway.events
+        self.later(ad, 901)
+        await self.say("а завтра?", message=2)
+        _, new = self.gateway.events
+        chat = new.source.chat_id
+        await ad.on_processing_start(new)
+        started = ad._engine.state.question.alive_at
+        self.later(ad, 10)
+        await ad.send(chat, "Поздний итог.", reply_to=old.message_id, metadata={"notify": True})
+        self.assertTrue(await hs.eventually(lambda: "Алиса:\nПоздний итог." in sent, timeout=0.5))
+        self.assertEqual(sent.count("Алиса:\nПоздний итог."), 1)
+        self.assertEqual(ad._engine.state.question.alive_at, started)
+        await ad.send(chat, "Ответ на новый вопрос.", reply_to=new.message_id, metadata={"notify": True})
+        self.assertEqual(await self.say("да", message=3), ("Ответ на новый вопрос.", False))
+
+    async def test_late_hooks_without_start_leave_the_next_question_in_work(self):
+        class NoStartGateway(HoldGateway):
+            async def __call__(self, ad, event):
+                self.events.append(event)
+
+        ad = await self.start(gateway=NoStartGateway())
+        ad._engine._budget = 0.1
+        await self.say(QUESTION)
+        (old,) = self.gateway.events
+        self.later(ad, 901)
+        ad._engine.tick()
+        await self.say("а завтра?", message=2)
+        _, new = self.gateway.events
+        await ad.on_processing_start(old)
+        await ad.send(old.source.chat_id, "Поздний итог.", reply_to=old.message_id, metadata={"notify": True})
+        await ad.on_processing_complete(old, None)
+        self.assertIsNotNone(ad._engine.state.question)
+        await ad.on_processing_start(new)
+        await ad.send(new.source.chat_id, "Ответ на новый вопрос.", reply_to=new.message_id, metadata={"notify": True})
+        self.assertEqual(await self.say("да", message=3), ("Ответ на новый вопрос.", False))
+
     async def test_the_deadline_drops_the_adapter_record_and_a_late_final_goes_to_telegram(self):
         sent = self.telegram()
         ad = await self.start(gateway=HoldGateway())

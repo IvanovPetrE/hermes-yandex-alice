@@ -404,12 +404,11 @@ class AliceAdapter(BasePlatformAdapter):
 
     # --- ход Hermes ------------------------------------------------------------------------------------------------
 
-    async def _ask(self, conversation: str, text: str) -> None:
+    async def _ask(self, conversation: str, text: str, mid: str) -> None:
         source = self.build_source(chat_id=conversation, chat_name="Alice", chat_type="dm",
                                    user_id=self._owner_id, user_name="owner")
-        # id хода уникален между экземплярами адаптера: счётчик с единицы после переподключения совпал бы со старым
         await self.handle_message(MessageEvent(text=text, message_type=MessageType.TEXT, source=source,
-                                               message_id="alice-" + uuid.uuid4().hex[:12],
+                                               message_id=mid,
                                                allow_gateway_control=False))
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
@@ -428,7 +427,7 @@ class AliceAdapter(BasePlatformAdapter):
                                    approval_prompt=bool(meta.get("is_approval_prompt")),
                                    late=self._engine is not None and self._engine.lost(reply))
         if self._engine is not None:
-            if turn is not None:   # признак жизни открытого хода (HERMESYAND-3)
+            if turn is not None and kind != sends.LATE:   # поздний итог относится к другому ходу
                 self._engine.on_send(chat)
             if kind == sends.FINAL:   # метка хода: карточка не дошла / подтверждения не настроены — своя озвучка
                 self._engine.on_final(chat, text, turn[1], card=self._appr.outcome(chat))
@@ -444,6 +443,8 @@ class AliceAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=f"out-{self._sends}")
 
     async def on_processing_start(self, event):
+        if self._engine is not None and self._engine.lost(event.message_id):
+            return
         chat, internal = str(event.source.chat_id), bool(getattr(event, "internal", False))
         self._open[chat] = (event.message_id, internal)
         self._appr.start_turn(chat)
