@@ -19,7 +19,7 @@ IDLE, WAIT, NEW_OR_OLD, READY, TG_FAILED, CONTINUE = "idle", "wait", "new_or_old
 class Settings:
     continue_hours: float = 2.0     # М2/Д6: беседа продолжается, если с последней реплики владельца меньше N часов
     lost_after: float = 600.0       # Д9: с после старта шлюза без итога и без внутреннего хода — «вопрос потерялся»
-    turn_lost_after: float = 900.0  # HERMESYAND-3: с без признаков жизни хода (нет complete, итога, отправок) — потерян
+    turn_lost_after: float = 900.0  # HERMESYAND-3/24: с без признаков жизни хода (старт, отправки; нет старта — от Ask) — потерян
     unclaimed_ttl: float = 86400.0  # Д13: срок незабранного ответа
     rate_per_minute: int = 6        # Д16: ходов агента в минуту
     telegram: bool = True           # доставка в Telegram настроена

@@ -666,6 +666,13 @@ class LostTurnTests(unittest.TestCase):
         self.assertEqual(acts, ())
         self.assertEqual(st.announce, LOST)   # Д9: 10 минут после старта
 
+    def test_a_gateway_start_after_a_long_downtime_hands_the_question_to_d9_without_dropping(self):
+        """Простой шлюза дольше срока хода не считается временем хода: тихого закрытия нет, дальше правит Д9."""
+        st, acts = d.step(started(), d.GatewayStarted(now=95.0 + 2 * MIN15))
+        self.assertEqual((acts, st.question is not None), ((), True))
+        st, acts = d.step(st, d.Tick(now=95.0 + 2 * MIN15 + 600.0))
+        self.assertEqual((acts, st.question, st.announce), ((), None, LOST))
+
     def test_without_telegram_only_the_turn_is_dropped(self):
         st, acts = d.step(started(), d.Tick(now=95.0 + MIN15), d.Settings(telegram=False))
         self.assertEqual(acts, (d.DropTurn(CONV),))
