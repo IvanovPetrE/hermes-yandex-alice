@@ -30,19 +30,24 @@ def strip_marker(text: str | None) -> str:
 
 
 def classify_send(*, open_turn: bool, turn_mid: str | None, reply_to: str | None, notify: object,
-                  interim: bool, text: str | None, approval_prompt: bool = False, late: bool = False) -> str:
+                  interim: bool, text: str | None, approval_prompt: bool = False, late: bool = False,
+                  asked_mid: str | None = None) -> str:
     """FINAL / INTERIM / RECOVERED / LATE / OUTSIDE для одного send().
 
     open_turn — у чата есть ход между on_processing_start и on_processing_complete; turn_mid — message_id этого хода
     (None у внутреннего хода автопродолжения, его итог приходит с reply_to=None); approval_prompt — текст `/approve`
     Hermes (`is_approval_prompt`): служебный, как промежуточная отправка (S4, вывод 5); late — reply_to — ход, снятый
-    без complete (HERMESYAND-3): его итог — поздний, при любом открытом ходе."""
+    без complete (HERMESYAND-3): его итог — поздний, при любом открытом ходе; asked_mid — message_id фразы текущего
+    вопроса, у которой не было on_processing_start (HERMESYAND-26: busy_input_mode interrupt перенаправляет ход без
+    хуков): итог с её reply_to и notify=True — итог хода, подсказка занятой сессии с тем же reply_to — служебная."""
     if interim or approval_prompt:
         return INTERIM
     if open_turn and notify is True and reply_to == turn_mid:
         return FINAL
     if late and notify is True:
         return LATE
+    if not open_turn and asked_mid is not None and reply_to == asked_mid:
+        return FINAL if notify is True else INTERIM
     if not open_turn and split_marker(text)[0]:
         return RECOVERED
     return OUTSIDE

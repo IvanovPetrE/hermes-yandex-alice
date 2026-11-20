@@ -425,12 +425,14 @@ class AliceAdapter(BasePlatformAdapter):
                                    reply_to=reply, notify=meta.get("notify"),
                                    interim=bool(meta.get("_interim_send")), text=text,
                                    approval_prompt=bool(meta.get("is_approval_prompt")),
-                                   late=self._engine is not None and self._engine.lost(reply))
+                                   late=self._engine is not None and self._engine.lost(reply),
+                                   asked_mid=None if self._engine is None else self._engine.asked_mid(chat))
         if self._engine is not None:
             if turn is not None and kind != sends.LATE:   # поздний итог относится к другому ходу
                 self._engine.on_send(chat)
-            if kind == sends.FINAL:   # метка хода: карточка не дошла / подтверждения не настроены — своя озвучка
-                self._engine.on_final(chat, text, turn[1], card=self._appr.outcome(chat))
+            if kind == sends.FINAL:   # метка хода: карточка не дошла / подтверждения не настроены — своя озвучка;
+                # без хода — итог перенаправленной фразы (HERMESYAND-26), не внутренний
+                self._engine.on_final(chat, text, turn[1] if turn else False, card=self._appr.outcome(chat))
             elif kind == sends.RECOVERED:   # форма пометки леджера Hermes (S5); ответ ли это — решает машина беседы
                 self._engine.on_recovered(chat, sends.strip_marker(text), text)
             else:   # вне хода (cron в голос, фон) и поздний итог снятого хода — в Telegram «Алиса:»; служебное и

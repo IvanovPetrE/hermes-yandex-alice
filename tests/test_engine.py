@@ -101,6 +101,33 @@ class AskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(h.asks), 1)
 
 
+class AskedMidTests(unittest.IsolatedAsyncioTestCase):
+    """HERMESYAND-26: id фразы текущего вопроса без хука start — для итога перенаправленного хода."""
+
+    async def test_the_asked_phrase_is_known_while_its_question_is_in_work(self) -> None:
+        h = Harness(budget=0.05)
+        await h.engine.handle(rq("вопрос"))
+        self.assertEqual(h.engine.asked_mid(h.conv), h.ask_ids[0])
+        self.assertIsNone(h.engine.asked_mid("другая"))
+        h.engine.on_final(h.conv, "Ответ", False)
+        self.assertIsNone(h.engine.asked_mid(h.conv))   # вопрос закрыт: повтор итога — вне хода
+
+    async def test_a_started_turn_is_not_an_asked_phrase(self) -> None:
+        h = Harness(budget=0.05)
+        await h.engine.handle(rq("вопрос"))
+        h.engine.on_turn_start(h.conv, h.ask_ids[0], False)
+        self.assertIsNone(h.engine.asked_mid(h.conv))
+
+    async def test_a_new_question_replaces_the_asked_phrase(self) -> None:
+        h = Harness(budget=0.05)
+        await h.engine.handle(rq("вопрос", mid="1"))
+        h.engine.on_final(h.conv, "Ответ", False)
+        await h.engine.handle(rq("да", mid="2"))   # забрать ответ
+        await h.engine.handle(rq("второй вопрос", mid="3"))
+        self.assertEqual(len(h.ask_ids), 2)
+        self.assertEqual(h.engine.asked_mid(h.conv), h.ask_ids[1])
+
+
 class TurnTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_turn_closed_without_a_final_fails_the_waiting_question(self) -> None:
         h = Harness(budget=1.0)

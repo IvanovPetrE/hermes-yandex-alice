@@ -140,6 +140,15 @@ class Engine:
         if conversation in self._open:
             self._apply(d.TurnAlive(now=self._wall(), conversation=conversation))
 
+    def asked_mid(self, conversation: str) -> str | None:
+        """message_id фразы текущего вопроса, ушедшей шлюзу без on_processing_start (HERMESYAND-26), — только пока вопрос
+        этой беседы в работе; иначе None."""
+        pending, st = self._pending_ask, self.state
+        if (pending is None or pending.dropped or pending.conversation != conversation
+                or st.conversation != conversation or st.question is None):
+            return None
+        return pending.mid
+
     def lost(self, mid: str | None) -> bool:
         """Ход `mid` снят без complete (по сроку или после итога): его поздний итог — в Telegram, а не голосом."""
         return mid is not None and mid in self._lost

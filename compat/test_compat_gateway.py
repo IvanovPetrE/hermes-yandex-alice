@@ -130,10 +130,10 @@ LATE_FINAL = "Поздний сорок четвёртый."
 OWNER_TG, CHAT = 5001, "5001"   # синтетические: владелец и его личный чат
 
 
-async def sc_busy_after_lost(w, answered: bool = True) -> None:
+async def sc_busy_after_lost(w, late_final: bool = True) -> None:
     """Срок потерянного хода вышел (complete заглушён), но Hermes ещё занят ходом: новая фраза уходит в занятую сессию
-    (HERMESYAND-8). Известное ограничение — тест закрепляет текущую привязку, а не желаемую. `answered=False` — голос
-    ответа не дождётся (interrupt): шесть раундов «да» вместо ожидания ответа."""
+    (HERMESYAND-8). `late_final` — ждать и поздний итог занятого хода t44 (queue); interrupt его снимает, второй фразе
+    отвечает перенаправленный ход (HERMESYAND-26)."""
     import dataclasses
 
     mute_complete(w, "[t44]")
@@ -150,23 +150,17 @@ async def sc_busy_after_lost(w, answered: bool = True) -> None:
     w.adapter._engine.tick()
     w.state["open_after_tick"] = sorted(w.adapter._open)
     w.state["second_at"] = len(w.journal)
-    if answered:
-        await w.ask("busy2", "сорок пятый [t45] вопрос")
-    else:
-        said = w.voice.setdefault("busy2", [])
-        said.append(await w.say("сорок пятый [t45] вопрос"))
-        for _ in range(6):
-            said.append(await w.say("да", confirm=True))
+    await w.ask("busy2", "сорок пятый [t45] вопрос")
     end = loop.time() + 40.0   # тексты должны дойти до send(): ответ на t45 и (queue) поздний итог t44
     while loop.time() < end:
         sent = " ".join(op.content for op in w.journal if op.op == "send")
-        if "Ответ сорок пятый." in sent and (LATE_FINAL in sent or not answered):
+        if "Ответ сорок пятый." in sent and (LATE_FINAL in sent or not late_final):
             break
         await asyncio.sleep(0.2)
 
 
 async def sc_busy_after_lost_interrupt(w) -> None:
-    await sc_busy_after_lost(w, answered=False)
+    await sc_busy_after_lost(w, late_final=False)
 
 
 class _Group(unittest.TestCase):
@@ -297,8 +291,8 @@ class GroupG(_Group):
 
 
 class _BusyGroup(unittest.TestCase):
-    """Фраза в занятую сессию после срока потерянного хода (HERMESYAND-8): известное ограничение, не желаемая привязка.
-    Telegram — `TelegramStandin`: видно, что и в каком виде ушло владельцу."""
+    """Фраза в занятую сессию после срока потерянного хода (HERMESYAND-8): queue — известное ограничение, interrupt —
+    исправлено (HERMESYAND-26). Telegram — `TelegramStandin`: видно, что и в каком виде ушло владельцу."""
 
     BUSY_MODE = ""
     SCENE = staticmethod(sc_busy_after_lost)
@@ -369,26 +363,29 @@ class GroupQ(_BusyGroup):
 
 
 class GroupI(_BusyGroup):
-    """То же при `busy_input_mode: interrupt` (режим боевого сервера). Известное ограничение (HERMESYAND-8, прогон v0.23.2):
-    Hermes «перенаправляет» занятый ход второй фразой — «↪ Redirected…» и ответ приходят с `reply_to` второй фразы, но
-    хуков `on_processing_start/complete` у неё нет. Ответ уходит в Telegram (с англ. подсказкой Hermes), вопрос не
-    закрывается, голос повторяет «ещё не готово». Исправление — отдельная заявка Intake."""
+    """То же при `busy_input_mode: interrupt` (режим боевого сервера, прогон v0.23.2): Hermes «перенаправляет» занятый ход
+    второй фразой — «↪ Redirected…» и ответ приходят с `reply_to` второй фразы, но хуков `on_processing_start/complete`
+    у неё нет. Итог с её `reply_to` и `notify=True` — ответ на текущий вопрос голосом, подсказка занятой сессии
+    отбрасывается (HERMESYAND-26)."""
 
     BUSY_MODE = "interrupt"
     SCENE = staticmethod(sc_busy_after_lost_interrupt)
 
-    def test_redirected_second_phrase_is_answered_in_telegram_but_voice_keeps_waiting(self) -> None:
+    def test_redirected_second_phrase_is_answered_by_voice(self) -> None:
         self.check_common()
         (second_mid,) = self._mids("[t45]")
         hooks = [op for op in self.world.journal if op.op in ("start", "complete") and op.mid == second_mid]
-        self.assertFalse(hooks, "у второй фразы появились хуки хода: ограничение исчезло, обновить тест и документы")
+        self.assertFalse(hooks, "у второй фразы появились хуки хода: перенаправления без хуков нет, обновить тест и документы")
         sends = [op for op in self.world.journal if op.op == "send" and op.reply_to == second_mid]
-        self.assertTrue(any("Redirected" in op.content for op in sends), "нет «↪ Redirected…»: сцена ничего не доказывает")
+        notices = [op for op in sends if "Redirected" in op.content]
+        self.assertTrue(notices, "нет «↪ Redirected…»: сцена ничего не доказывает")
+        self.assertTrue(all(op.metadata.get("notify") is not True for op in notices), "подсказка пришла с notify=True")
         finals = [op for op in sends if "Ответ сорок пятый." in op.content]
         self.assertEqual([op.metadata.get("notify") for op in finals], [True], "ответ второй фразы — один итог с notify")
-        voice = self.world.voice["busy2"]
-        self.assertTrue(all(reply in harness.WAITING for reply in voice), f"голос ответил по существу: {voice}")
-        self.assertIn("Алиса:\nОтвет сорок пятый.", self.plain_telegram(), "ответ не пришёл в Telegram")
+        self.assertEqual(self.world.voice["busy2"][-1], "Ответ сорок пятый.")
+        telegram = self.plain_telegram()
+        self.assertFalse([t for t in telegram if "Redirected" in t], f"подсказка Hermes ушла в Telegram: {telegram}")
+        self.assertNotIn("Алиса:\nОтвет сорок пятый.", telegram, "ответ, прозвучавший голосом, ушёл и в Telegram")
 
 
 if __name__ == "__main__":

@@ -52,6 +52,34 @@ class MarkerTests(unittest.TestCase):
         self.assertEqual(s.split_marker("Ответ"), ("", "Ответ"))
 
 
+class AskedTests(unittest.TestCase):
+    """HERMESYAND-26: фраза текущего вопроса ушла шлюзу без хука start (interrupt перенаправил ход)."""
+
+    def asked(self, **kw):
+        return kind(**{"open_turn": False, "turn_mid": None, "reply_to": "a2", "asked_mid": "a2", **kw})
+
+    def test_a_final_anchored_to_the_asked_phrase_is_final(self):
+        self.assertEqual(self.asked(), s.FINAL)
+
+    def test_a_busy_notice_anchored_to_the_asked_phrase_is_silent(self):
+        for notify in (None, False):
+            with self.subTest(notify=notify):
+                self.assertEqual(self.asked(notify=notify, text="↪ Redirected current run…"), s.INTERIM)
+        self.assertIsNone(s.forward_text(open_turn=False, kind=s.INTERIM, text="↪ Redirected current run…"))
+
+    def test_another_anchor_or_no_asked_phrase_is_outside(self):
+        self.assertEqual(self.asked(reply_to="x9"), s.OUTSIDE)
+        self.assertEqual(self.asked(reply_to=None), s.OUTSIDE)
+        self.assertEqual(self.asked(asked_mid=None), s.OUTSIDE)
+
+    def test_an_open_turn_keeps_rule_s1(self):
+        self.assertEqual(kind(turn_mid="m1", reply_to="a2", asked_mid="a2"), s.OUTSIDE)
+        self.assertEqual(kind(asked_mid="a2"), s.FINAL)
+
+    def test_a_late_final_wins_over_the_asked_phrase(self):
+        self.assertEqual(self.asked(reply_to="m1", asked_mid="m1", late=True), s.LATE)
+
+
 class LateTests(unittest.TestCase):
     """HERMESYAND-3: итог хода, снятого без complete, приходит поздно — только в Telegram с подписью, и при новом ходе."""
 
