@@ -16,7 +16,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from collections import deque
+from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 try:
@@ -31,8 +33,15 @@ except ImportError:  # тесты импортируют модули плаги
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class _PendingAsk:
+    conversation: str
+    mid: str
+    dropped: bool = False
+
+
 class Engine:
-    def __init__(self, settings: d.Settings, ask: Callable[[str, str], Awaitable[None]],
+    def __init__(self, settings: d.Settings, ask: Callable[[str, str, str], Awaitable[None]],
                  recall: Callable[[str], Awaitable[tuple[str, str | None]]], new_id: Callable[[], str],
                  wall: Callable[[], float] = time.time, budget: float = 3.5, recall_timeout: float = 1.5,
                  gate_timeout: float = 3.0, log: Callable[[str], None] | None = None, state: d.State | None = None,
@@ -48,6 +57,7 @@ class Engine:
         self.state = state if state is not None else d.State(conversation=new_id())
         self._waiters: list[asyncio.Future[str]] = []
         self._tasks: set[asyncio.Task] = set()
+        self._pending_ask: _PendingAsk | None = None   # последний Ask до start; срок снимает только текущий вопрос
         self._open: dict[str, tuple[str | None, asyncio.Event]] = {}   # беседа -> (message_id хода, сигнал «ход закрыт»)
         self._closed = False
         self._reading: asyncio.Future | None = None  # идущее чтение истории
@@ -116,6 +126,9 @@ class Engine:
         self._apply(d.Approval(now=self._wall(), conversation=conversation, waiting=waiting))
 
     def on_turn_start(self, conversation: str, mid: str | None, internal: bool) -> None:
+        if self.lost(mid):
+            return
+        self._clear_pending_ask(conversation, mid)
         self._open[conversation] = (mid, asyncio.Event())
         self._finals.discard(conversation)
         if internal:   # Hermes дозапустил ход после перезапуска (S5): вопрос не потерян
@@ -139,6 +152,7 @@ class Engine:
             return
         if turn is None and self.lost(mid):   # поздний complete снятого хода: вопрос в работе — уже другой
             return
+        self._clear_pending_ask(conversation, mid)
         self._open.pop(conversation, None)
         if turn is not None:
             turn[1].set()
@@ -186,9 +200,16 @@ class Engine:
             elif isinstance(act, d.Hold):
                 hold = True
             elif isinstance(act, d.DropTurn):   # до Ask того же шага: фраза не ждёт гейта потерянного хода
+                pending = self._pending_ask
+                if pending is not None and pending.conversation == act.conversation:
+                    pending.dropped = True
+                    self._lost.append(pending.mid)
+                    self._pending_ask = None
                 self._drop_turn(act.conversation)
             elif isinstance(act, d.Ask):
-                self._spawn(self._do_ask(act.conversation, act.text))
+                pending = _PendingAsk(act.conversation, "alice-" + uuid.uuid4().hex[:12])
+                self._pending_ask = pending
+                self._spawn(self._do_ask(pending, act.text))
             elif isinstance(act, d.Telegram):
                 self._queue(act.conversation, act.text, act.fallback)
             elif isinstance(act, d.RecallLast):
@@ -248,10 +269,18 @@ class Engine:
             except Exception as exc:  # noqa: BLE001
                 self._log(f"turn drop failed: {type(exc).__name__}")
 
-    async def _do_ask(self, conversation: str, text: str) -> None:
+    def _clear_pending_ask(self, conversation: str, mid: str | None) -> None:
+        pending = self._pending_ask
+        if pending is not None and pending.conversation == conversation and pending.mid == mid:
+            self._pending_ask = None
+
+    async def _do_ask(self, pending: _PendingAsk, text: str) -> None:
         """Гейт Р2: фраза уходит шлюзу, только когда в беседе нет открытого хода Hermes. Не вышло — вопрос закрывается
         (`step` уже записал его в состояние), ответ владельцу — «не получилось»; в лог — класс ошибки, без текста.
         Итог хода уже был, а complete за срок гейта не пришёл — ход считается закрытым (HERMESYAND-3, решение владельца)."""
+        conversation = pending.conversation
+        if pending.dropped:
+            return
         try:
             turn = self._open.get(conversation)
             if turn is not None:
@@ -262,7 +291,11 @@ class Engine:
                         raise
                     self._log("turn closed without complete")
                     self._drop_turn(conversation)
-            await self._ask(conversation, text)
+            if not pending.dropped:
+                await self._ask(conversation, text, pending.mid)
         except Exception as exc:  # noqa: BLE001 - включая TimeoutError гейта; ни одна ошибка не должна оставить вопрос в работе
+            if pending.dropped:
+                return
+            self._clear_pending_ask(conversation, pending.mid)
             self._log(f"ask failed: {type(exc).__name__}")
             self._apply(d.TurnClosed(now=self._wall(), conversation=conversation))

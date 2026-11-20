@@ -26,6 +26,8 @@ class Harness:
 
     def __init__(self, **kw):
         self.asks = []
+        self.ask_ids = []
+        self.on_ask = None
         self.recall_calls = 0
         self.recall_result = ("found", "Старый ответ")
         self.recall_delay = 0.0
@@ -34,10 +36,13 @@ class Harness:
         self.clock = 1000.0
         self.lines = []
 
-        async def ask(conversation, text):
+        async def ask(conversation, text, mid):
             if self.ask_error:
                 raise self.ask_error
             self.asks.append((conversation, text))
+            self.ask_ids.append(mid)
+            if self.on_ask is not None:
+                await self.on_ask(text)
 
         async def recall(conversation):
             self.recall_calls += 1
@@ -64,15 +69,15 @@ class AskTests(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(h.engine.handle(rq("вопрос")))
         await settle()
         self.assertEqual(h.asks, [(h.conv, "вопрос")])
-        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_turn_start(h.conv, h.ask_ids[0], False)
         h.engine.on_final(h.conv, "Ответ", False)
-        h.engine.on_turn_complete(h.conv, "m1", False)
+        h.engine.on_turn_complete(h.conv, h.ask_ids[0], False)
         self.assertEqual(await task, "Ответ")
 
     async def test_a_final_after_the_budget_becomes_the_unclaimed_answer(self) -> None:
         h = Harness(budget=0.05)
         self.assertEqual(await h.engine.handle(rq("вопрос")), p.REPLY_ACCEPTED)
-        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_turn_start(h.conv, h.ask_ids[0], False)
         h.engine.on_final(h.conv, "Поздний ответ", False)
         self.assertEqual(h.engine.state.answer.parts, ("Поздний ответ",))
 
@@ -101,17 +106,17 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
         h = Harness(budget=1.0)
         task = asyncio.create_task(h.engine.handle(rq("вопрос")))
         await settle()
-        h.engine.on_turn_start(h.conv, "m1", False)
-        h.engine.on_turn_complete(h.conv, "m1", False)   # исключение или пустой ход, итога не было
+        h.engine.on_turn_start(h.conv, h.ask_ids[0], False)
+        h.engine.on_turn_complete(h.conv, h.ask_ids[0], False)   # исключение или пустой ход, итога не было
         self.assertEqual(await task, p.REPLY_FAILED)
         self.assertIsNone(h.engine.state.question)
 
     async def test_a_turn_closed_after_the_final_keeps_the_answer(self) -> None:
         h = Harness(budget=0.05)
         await h.engine.handle(rq("вопрос"))
-        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_turn_start(h.conv, h.ask_ids[0], False)
         h.engine.on_final(h.conv, "Ответ", False)
-        h.engine.on_turn_complete(h.conv, "m1", False)
+        h.engine.on_turn_complete(h.conv, h.ask_ids[0], False)
         self.assertEqual(h.engine.state.answer.parts, ("Ответ",))
         self.assertEqual(h.engine.state.announce, "")   # «не получилось» не прозвучит
 
@@ -121,8 +126,8 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
         saved = []
         h = Harness(budget=0.05, save=saved.append)
         await h.engine.handle(rq("вопрос"))
-        h.engine.on_turn_start(h.conv, "m1", False)
-        h.engine.on_turn_complete(h.conv, "m1", False, interrupted=True)
+        h.engine.on_turn_start(h.conv, h.ask_ids[0], False)
+        h.engine.on_turn_complete(h.conv, h.ask_ids[0], False, interrupted=True)
         self.assertIsNotNone(h.engine.state.question)
         self.assertEqual(h.engine.state.announce, "")
         self.assertIsNotNone(saved[-1].question)
@@ -186,7 +191,7 @@ class StoredStateTests(unittest.IsolatedAsyncioTestCase):
         h = Harness(save=broken)
         task = asyncio.create_task(h.engine.handle(rq("вопрос")))
         await settle()
-        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_turn_start(h.conv, h.ask_ids[0], False)
         h.engine.on_final(h.conv, "Ответ", False)
         self.assertEqual(await task, "Ответ")
         self.assertEqual(h.lines, ["state save failed: OSError"])
@@ -243,7 +248,7 @@ class RobustnessTests(unittest.IsolatedAsyncioTestCase):
         await h.engine.close()
         before = h.engine.state
         h.engine.on_final(h.conv, "Поздний ответ", False)
-        h.engine.on_turn_complete(h.conv, "m1", False)
+        h.engine.on_turn_complete(h.conv, h.ask_ids[0], False)
         h.engine.on_gateway_started()
         h.engine.tick()
         self.assertEqual(h.engine.state, before)
@@ -354,7 +359,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         """HERMESYAND-3: шлюз не вызвал on_processing_complete и итога нет — через срок ход потерян, фраза идёт агенту."""
         h = Harness(budget=0.05, gate_timeout=0.05)
         self.assertEqual(await h.engine.handle(rq("первый", mid="1")), p.REPLY_ACCEPTED)
-        h.engine.on_turn_start(h.conv, "m1", False)   # complete и итога не будет
+        h.engine.on_turn_start(h.conv, h.ask_ids[0], False)   # complete и итога не будет
         h.clock += 901   # срок потерянного хода — 15 минут (Settings.turn_lost_after = 900)
         h.engine.tick()
         task = asyncio.create_task(h.engine.handle(rq("второй", mid="2")))
@@ -380,7 +385,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         h = Harness(budget=1.0, gate_timeout=0.05)
         first = asyncio.create_task(h.engine.handle(rq("первый", mid="1")))
         await settle()
-        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_turn_start(h.conv, h.ask_ids[0], False)
         h.engine.on_final(h.conv, "Ответ первый", False)
         self.assertEqual(await first, "Ответ первый")   # on_turn_complete не вызываем
         task = asyncio.create_task(h.engine.handle(rq("второй", mid="2")))
@@ -393,7 +398,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         dropped = []
         h = Harness(budget=0.05, gate_timeout=5.0, drop=dropped.append)
         await h.engine.handle(rq("первый", mid="1"))
-        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_turn_start(h.conv, h.ask_ids[0], False)
         h.engine.on_final(h.conv, "Ответ первый", False)   # итог есть — вопрос закрыт, ход не закрыт
         task = asyncio.create_task(h.engine.handle(rq("скинь ответ", mid="2",
                                                       nlu={"intents": {"hya.answer.get": {}}})))
@@ -412,40 +417,75 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         dropped = []
         h = Harness(budget=0.05, drop=dropped.append)
         await h.engine.handle(rq("первый", mid="1"))
-        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_turn_start(h.conv, h.ask_ids[0], False)
         h.clock += 901
         h.engine.tick()
         self.assertEqual(dropped, [h.conv])
         self.assertIsNone(h.engine.state.question)
-        self.assertTrue(h.engine.lost("m1"))
+        self.assertTrue(h.engine.lost(h.ask_ids[0]))
+
+    async def test_a_timed_out_question_waiting_for_the_gate_is_never_sent(self) -> None:
+        h = Harness(budget=0.01, gate_timeout=5.0)
+        h.engine.on_turn_start(h.conv, None, True)
+        await h.engine.handle(rq("первый", mid="1"))
+        self.assertEqual(h.asks, [])
+        h.clock += 901
+        h.engine.tick()
+        await h.engine.handle(rq("второй", mid="2"))
+        self.assertEqual(h.asks, [(h.conv, "второй")])
+
+    async def test_an_expired_ask_error_after_id_eviction_cannot_close_the_new_question(self) -> None:
+        h = Harness(budget=0.001)
+        release = asyncio.Event()
+        self.addAsyncCleanup(h.engine.close)
+
+        async def wait_then_fail(text):
+            if text == "первый":
+                await release.wait()
+                raise RuntimeError("fake gateway failure")
+
+        h.on_ask = wait_then_fail
+        await h.engine.handle(rq("первый", mid="1"))
+        old_id = h.ask_ids[0]
+        for index in range(2, 35):
+            h.clock += 901
+            h.engine.tick()
+            await h.engine.handle(rq("следующий", mid=str(index)))
+        release.set()
+        await settle()
+        self.assertIsNotNone(h.engine.state.question)
+        self.assertFalse(h.engine.lost(old_id))
+        h.engine.on_turn_start(h.conv, h.ask_ids[-1], False)
+        h.engine.on_final(h.conv, "Новый ответ", False)
+        self.assertEqual(h.engine.state.answer.parts, ("Новый ответ",))
 
     async def test_without_a_final_and_before_the_deadline_the_gate_still_fails(self) -> None:
         h = Harness(budget=0.05, gate_timeout=0.05)
         await h.engine.handle(rq("первый", mid="1"))
-        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_turn_start(h.conv, h.ask_ids[0], False)
         h.clock += 899
         h.engine.tick()
         self.assertEqual(await h.engine.handle(rq("нет", mid="2", nlu={"intents": {"YANDEX.REJECT": {}}})),
                          "Хорошо, спросите ответ позже.")
         self.assertEqual(await h.engine.handle(rq("второй", mid="3")),
                          "Начать новый диалог или продолжить прошлый?")   # вопрос ещё в работе
-        self.assertFalse(h.engine.lost("m1"))
+        self.assertFalse(h.engine.lost(h.ask_ids[0]))
 
     async def test_a_late_complete_of_a_dropped_turn_does_not_close_the_new_question(self) -> None:
         h = Harness(budget=0.05, gate_timeout=0.05)
         await h.engine.handle(rq("первый", mid="1"))
-        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_turn_start(h.conv, h.ask_ids[0], False)
         h.clock += 901
         h.engine.tick()
         self.assertEqual(await h.engine.handle(rq("второй", mid="2")), p.REPLY_ACCEPTED)
-        h.engine.on_turn_complete(h.conv, "m1", False)   # поздний complete снятого хода; новый ход ещё не стартовал
+        h.engine.on_turn_complete(h.conv, h.ask_ids[0], False)   # поздний complete снятого хода; новый ход ещё не стартовал
         self.assertIsNotNone(h.engine.state.question)
         self.assertEqual(h.engine.state.announce, "")
 
     async def test_a_request_waiting_when_the_tick_drops_the_turn_hears_a_failure(self) -> None:
         h = Harness(budget=0.05)
         await h.engine.handle(rq("первый", mid="1"))
-        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_turn_start(h.conv, h.ask_ids[0], False)
         h.engine._budget = 1.0
         h.clock += 899
         waiting = asyncio.create_task(h.engine.handle(rq("да", mid="2", nlu={"intents": {"YANDEX.CONFIRM": {}}})))
@@ -457,7 +497,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_send_in_the_open_turn_moves_the_deadline(self) -> None:
         h = Harness(budget=0.05)
         await h.engine.handle(rq("первый", mid="1"))
-        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_turn_start(h.conv, h.ask_ids[0], False)
         h.clock += 600
         h.engine.on_send(h.conv)
         h.clock += 600
@@ -481,11 +521,11 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         self.queued: list[tuple[str, str, tuple[str, ...]]] = []
-        self.asks: list[tuple[str, str]] = []
+        self.asks: list[tuple[str, str, str]] = []
         ids = (f"c{i}" for i in itertools.count(1))
 
-        async def ask(conversation, text):
-            self.asks.append((conversation, text))
+        async def ask(conversation, text, mid):
+            self.asks.append((conversation, text, mid))
 
         async def recall(conversation):
             return "found", None
@@ -498,9 +538,9 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(self.engine.handle(rq(text, mid=str(len(self.asks) + 1))))
         await settle()
         conv = self.engine.state.conversation
-        self.engine.on_turn_start(conv, "m1", False)
+        self.engine.on_turn_start(conv, self.asks[-1][2], False)
         self.engine.on_final(conv, final, False)
-        self.engine.on_turn_complete(conv, "m1", False)
+        self.engine.on_turn_complete(conv, self.asks[-1][2], False)
         return await task
 
     async def test_details_after_the_telegram_marker_are_queued_with_the_label(self) -> None:
@@ -538,7 +578,7 @@ class ApprovalTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_live_card_is_said_while_waiting(self) -> None:
         h = Harness(budget=0.05)
         self.assertEqual(await h.engine.handle(rq("удали каталог", mid="1")), p.REPLY_ACCEPTED)
-        h.engine.on_turn_start(h.conv, "m1", False)
+        h.engine.on_turn_start(h.conv, h.ask_ids[0], False)
         h.engine.on_approval(h.conv, True)
         self.assertEqual(await h.engine.handle(rq("да", mid="2", nlu={"intents": {"YANDEX.CONFIRM": {}}})),
                          "Жду подтверждения в Телеграме. Подождёте?")
@@ -555,7 +595,7 @@ class ApprovalTests(unittest.IsolatedAsyncioTestCase):
                 h = Harness(budget=1.0)
                 task = asyncio.create_task(h.engine.handle(rq("удали каталог")))
                 await settle()
-                h.engine.on_turn_start(h.conv, "m1", False)
+                h.engine.on_turn_start(h.conv, h.ask_ids[0], False)
                 h.engine.on_final(h.conv, "Команда отклонена.", False, card=card)
                 self.assertEqual(await task, said)
 
