@@ -101,6 +101,24 @@ class AdapterCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         return data["response"]["text"], data["response"]["end_session"]
 
+    def telegram(self) -> list:
+        """Telegram включён; список — тексты, ушедшие владельцу."""
+        sent = []
+
+        async def sender(pconfig, chat, text, notify=False):
+            sent.append(text)
+            return {"success": True}
+
+        hs.world.sender = sender
+        hs.world.scope.update({"TELEGRAM_BOT_TOKEN": "0:test-token", "ALICE_TELEGRAM_CHAT": CHAT})
+        return sent
+
+    @staticmethod
+    def later(ad, seconds: float) -> None:
+        """Часы движка сдвигаются вперёд на `seconds` (накопительно)."""
+        real = ad._engine._wall
+        ad._engine._wall = lambda: real() + seconds
+
 
 class LifecycleTests(AdapterCase):
     def test_register_does_not_open_port(self):
@@ -414,22 +432,6 @@ class RestartTests(AdapterCase):
 class LostTurnTests(AdapterCase):
     """HERMESYAND-3: ход без on_processing_complete снимается по сроку в обоих местах; его поздний итог — в Telegram."""
 
-    def telegram(self) -> list:
-        sent = []
-
-        async def sender(pconfig, chat, text, notify=False):
-            sent.append(text)
-            return {"success": True}
-
-        hs.world.sender = sender
-        hs.world.scope.update({"TELEGRAM_BOT_TOKEN": "0:test-token", "ALICE_TELEGRAM_CHAT": CHAT})
-        return sent
-
-    @staticmethod
-    def later(ad, seconds: float) -> None:
-        real = ad._engine._wall
-        ad._engine._wall = lambda: real() + seconds
-
     async def test_a_late_final_without_start_reaches_telegram_during_the_next_turn(self):
         class NoStartGateway(HoldGateway):
             async def __call__(self, ad, event):
@@ -534,12 +536,14 @@ class RedirectedPhraseTests(AdapterCase):
 
     REDIRECTED = "↪ Redirected current run to your new message."
 
-    async def redirect(self):
-        sent = LostTurnTests.telegram(self)
+    async def redirect(self, during_lost_turn=None):
+        sent = self.telegram()
         ad = await self.start(gateway=FirstTurnOnlyGateway())
         ad._engine._budget = 0.1
         await self.say(QUESTION)
-        LostTurnTests.later(ad, 901)
+        if during_lost_turn is not None:
+            await during_lost_turn(ad, self.gateway.events[0])
+        self.later(ad, 901)
         ad._engine.tick()
         self.assertTrue(await hs.eventually(lambda: "Алиса:\nПрошлый ответ не пришёл." in sent))
         self.assertEqual((await self.say("а завтра?", message=2))[0],
@@ -567,6 +571,27 @@ class RedirectedPhraseTests(AdapterCase):
         await self.beacon(ad, sent, chat)
         self.assertFalse(any("Redirected" in s for s in sent))
         self.assertIsNotNone(ad._engine.state.question)
+
+    async def test_the_card_label_of_the_lost_turn_does_not_replace_the_answer(self):
+        async def refused_card(ad, old):   # карточка без request_id не открывается: метка «failed» у снятого хода
+            prompt = SimpleNamespace(chat_id=old.source.chat_id, session_key="", request_id=None, command="rm -rf x",
+                                     description="", smart_denied=False, actions=[])
+            await ad._send_exec_approval_prompt(prompt)
+
+        ad, sent, new = await self.redirect(during_lost_turn=refused_card)
+        await ad.send(new.source.chat_id, "Ответ сорок пятый.", reply_to=new.message_id, metadata={"notify": True})
+        self.assertEqual(await self.say("да", message=3), ("Ответ сорок пятый.", False))
+
+    async def test_sends_of_the_redirected_run_keep_the_question_alive(self):
+        ad, sent, new = await self.redirect()
+        chat = new.source.chat_id
+        self.later(ad, 600)
+        await ad.send(chat, "⏳ Ещё работаю", reply_to=new.message_id, metadata={"_interim_send": True, "notify": True})
+        self.later(ad, 400)   # от фразы 1000 с > срока 900 с, от последней отправки — 400 с
+        ad._engine.tick()
+        self.assertIsNotNone(ad._engine.state.question)
+        await ad.send(chat, "Ответ сорок пятый.", reply_to=new.message_id, metadata={"notify": True})
+        self.assertEqual(await self.say("да", message=3), ("Ответ сорок пятый.", False))
 
     async def test_a_final_with_another_anchor_still_goes_to_telegram(self):
         ad, sent, new = await self.redirect()

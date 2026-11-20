@@ -140,6 +140,12 @@ class Engine:
         if conversation in self._open:
             self._apply(d.TurnAlive(now=self._wall(), conversation=conversation))
 
+    def on_asked_send(self, conversation: str, reply_to: str | None) -> None:
+        """Отправка без открытого хода с `reply_to` фразы текущего вопроса (перенаправленный ход, HERMESYAND-26) —
+        признак жизни, как отправка в открытом ходе."""
+        if reply_to is not None and reply_to == self.asked_mid(conversation):
+            self._apply(d.TurnAlive(now=self._wall(), conversation=conversation))
+
     def asked_mid(self, conversation: str) -> str | None:
         """message_id фразы текущего вопроса, ушедшей шлюзу без on_processing_start (HERMESYAND-26), — только пока вопрос
         этой беседы в работе; иначе None."""

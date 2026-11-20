@@ -430,6 +430,8 @@ class AliceAdapter(BasePlatformAdapter):
         if self._engine is not None:
             if turn is not None and kind != sends.LATE:   # поздний итог относится к другому ходу
                 self._engine.on_send(chat)
+            elif turn is None and kind != sends.LATE:   # отправка перенаправленного хода фразы — тоже признак жизни
+                self._engine.on_asked_send(chat, reply)
             if kind == sends.FINAL:   # метка хода: карточка не дошла / подтверждения не настроены — своя озвучка;
                 # без хода — итог перенаправленной фразы (HERMESYAND-26), не внутренний
                 self._engine.on_final(chat, text, turn[1] if turn else False, card=self._appr.outcome(chat))
@@ -454,8 +456,10 @@ class AliceAdapter(BasePlatformAdapter):
             self._engine.on_turn_start(chat, event.message_id, internal)
 
     def _drop_turn(self, chat: str) -> None:
-        """Движок снял ход без complete (по сроку или после итога, HERMESYAND-3): отправки больше не считаются ходовыми."""
+        """Движок снял ход без complete (по сроку или после итога, HERMESYAND-3): отправки больше не считаются ходовыми,
+        метка подтверждений снятого хода не достаётся итогу перенаправленной фразы (HERMESYAND-26)."""
         self._open.pop(chat, None)
+        self._appr.start_turn(chat)
 
     def _shutting_down(self) -> bool:
         """Шлюз останавливается или перезапускается (`GatewayRunner._draining`, `run_shutdown.py`; закреплено тестом
