@@ -150,7 +150,13 @@ async def sc_busy_after_lost(w, late_final: bool = True) -> None:
     w.adapter._engine.tick()
     w.state["open_after_tick"] = sorted(w.adapter._open)
     w.state["second_at"] = len(w.journal)
-    await w.ask("busy2", "сорок пятый [t45] вопрос")
+    # HERMESYAND-30: срок 5 с нужен был только для тика выше; вторая фраза (без start, срок от Ask) не должна сниматься
+    # им, пока ждёт в очереди Hermes, иначе «да» уходит агенту новым вопросом и исход зависит от таймингов
+    engine.settings = dataclasses.replace(engine.settings, turn_lost_after=60.0)
+    if late_final:   # queue: ответа голосом не будет (итоги с reply_to прошлого хода) — одна реплика без «да»
+        w.voice.setdefault("busy2", []).append(await w.say("сорок пятый [t45] вопрос"))
+    else:
+        await w.ask("busy2", "сорок пятый [t45] вопрос")
     end = loop.time() + 40.0   # тексты должны дойти до send(): ответ на t45 и (queue) поздний итог t44
     while loop.time() < end:
         sent = " ".join(op.content for op in w.journal if op.op == "send")
@@ -341,7 +347,8 @@ class _BusyGroup(unittest.TestCase):
 
 class GroupQ(_BusyGroup):
     """Фраза в занятую сессию, `busy_input_mode: queue` (худший случай из S1). Известное ограничение: Hermes обрабатывает
-    фразу отдельным ходом, но `on_processing_complete` приходит раньше итога, а итог — с `reply_to` прошлого хода."""
+    фразу отдельным ходом, но `on_processing_complete` приходит раньше итога, а итог — с `reply_to` прошлого хода.
+    Сцена детерминированная (HERMESYAND-30): после тика срок хода поднят, вторая фраза — одна реплика без «да»."""
 
     BUSY_MODE = "queue"
 
@@ -357,7 +364,12 @@ class GroupQ(_BusyGroup):
         spoken = " ".join(s for lines in self.world.voice.values() for s in lines)
         self.assertNotIn(LATE_FINAL, spoken, "поздний итог прошлого хода не должен звучать")
         self.assertNotIn("Ответ сорок пятый.", spoken, "ответ на вторую фразу голосом не звучит (известное ограничение)")
-        self.assertEqual(self.world.voice["busy2"][-1], "Не получилось, попробуйте ещё раз.")
+        # HERMESYAND-30: без дребезга — «да» агенту не уходит, вопрос t45 не снят сроком (тихо) и остаётся ждать
+        self.assertEqual(self.world.voice["busy2"], [self.world.voice["busy2"][0]])
+        self.assertIn(self.world.voice["busy2"][0], harness.WAITING, "вторая фраза получила не ожидающую реплику")
+        self.assertNotIn("Не получилось", spoken)
+        lost = [t for t in self.plain_telegram() if "Прошлый ответ не пришёл" in t]
+        self.assertEqual(len(lost), 1, f"«Прошлый ответ не пришёл» должен быть один (за t44): {lost}")
         for text in ("Алиса:\n" + LATE_FINAL, "Алиса:\nОтвет сорок пятый."):
             self.assertIn(text, self.plain_telegram(), "итог не пришёл в Telegram")
 
