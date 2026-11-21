@@ -541,8 +541,8 @@ def _utterance(st: State, ev: Utterance, settings: Settings) -> tuple[State, tup
         if st.prompt == IDLE and st.answer is None and st.question is None:   # из истории Hermes (адаптер)
             return replace(st, holding="recall"), (RecallLast(st.conversation),)
         return _say(st, st.last_said or p.REPLY_HELLO)
-    if st.prompt == WAIT:
-        return _row_wait(st, ev, k, settings)
+    if st.prompt == WAIT and st.answer is None:
+        return _row_wait(st, k, settings)
     if k == REJECTED:   # Д16; вопрос Алисы остаётся прежним (П-REJ)
         said, acts = _say(st, p.REPLY_REJECTED)
         return replace(said, last_said=st.last_said), acts
@@ -588,14 +588,12 @@ def _row_fork(st: State, k: str) -> tuple[State, tuple[object, ...]]:
     return _say(st, p.REPLY_NEW_OR_OLD)
 
 
-def _row_wait(st: State, ev: Utterance, k: str, settings: Settings) -> tuple[State, tuple[object, ...]]:
-    """«Подождёте?»: всё, кроме «нет/позже» и команд, — ждать (М5); ответ уже готов — озвучить (О7)."""
+def _row_wait(st: State, k: str, settings: Settings) -> tuple[State, tuple[object, ...]]:
+    """Пока ответ готовится, на «Подождёте?» ждём, кроме «нет/позже» и Telegram (М5)."""
     if k == p.INTENT_TELEGRAM:
-        return _send_answer(st, settings) if st.answer else _send_later(st, settings)
+        return _send_later(st, settings)
     if k in _SAY_NO:
-        return _say(st, p.REPLY_ANSWER_WAITS if st.answer else p.REPLY_LATER, prompt=IDLE)
-    if st.answer:
-        return _voice(st, st.answer)
+        return _say(st, p.REPLY_LATER, prompt=IDLE)
     return _hold(st)
 
 
@@ -611,7 +609,7 @@ def _row_offer(st: State, ev: Utterance, k: str, settings: Settings) -> tuple[St
 
 
 def _row_pending_answer(st: State, ev: Utterance, k: str, settings: Settings) -> tuple[State, tuple[object, ...]]:
-    """Ответ готов, Алиса ничего не спрашивает: «да»/«дальше» — озвучить, «нет» — подождёт, фраза — шаг 4."""
+    """Готовый ответ в обычной беседе или после «Подождёте?»: согласие — озвучить, новая фраза — шаг 4."""
     if k in _SAY_YES:
         return _old(st)
     if k in _SAY_NO:
