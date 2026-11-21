@@ -31,6 +31,15 @@ def temp_home() -> Path:
     return home
 
 
+def disable_update_check() -> None:
+    """HERMESYAND-31: шлюз при старте запускает в фоне проверку обновлений Hermes (`git ls-remote` в сеть и
+    `git merge-base --is-ancestor`, на сервере до ~430 МБ ОЗУ и 30+ с). Короткий прогон кончается раньше неё, `git`
+    остаётся сиротой, и следующий прогон идёт на подкачке («агент не получил запрос»). Проверка тесту не нужна."""
+    from hermes_cli import source_check
+
+    source_check.check_for_updates = lambda *a, **k: {}
+
+
 def free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -272,6 +281,7 @@ class World:
         from gateway.config import Platform, load_gateway_config
         from gateway.run import GatewayRunner
 
+        disable_update_check()
         runner = GatewayRunner(load_gateway_config())
         if not await runner.start():
             raise AssertionError("GatewayRunner.start() returned False")

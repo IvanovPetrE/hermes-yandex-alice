@@ -51,6 +51,7 @@ async def main(checkout: str) -> None:
     journal = FileJournal(home / "compat-journal.jsonl")
     hold_flag = home / "hold_final"
     setup_logging(mode="gateway")   # как `hermes gateway run`: без файловых логов проверка «секрета нет в логах» была бы пустой
+    harness.disable_update_check()
     runner = GatewayRunner(load_gateway_config())
     loop = asyncio.get_running_loop()
 
