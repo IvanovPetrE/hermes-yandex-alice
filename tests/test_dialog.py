@@ -1101,7 +1101,7 @@ TABLE = {
         "прошлый": HOLD, "новый": say(NEW_TG_T), "подожду": HOLD, "позже": say(LATER_T), "в телеграм": say(IN_TG_T),
         "дальше": HOLD, "помощь": say(WAIT_HELP_T), "повтори": say(ACCEPTED_T)}),
     "подождёте? + готово": (ready_on_wait, {
-        "да": VOICE, "нет": say(WAITS_T), "без интента": VOICE, "пусто": VOICE, "отклонённая": VOICE,
+        "да": VOICE, "нет": say(WAITS_T), "без интента": FORK, "пусто": say(ACCEPTED_T), "отклонённая": say(REJECT),
         "скинь": VOICE, "прошлый": VOICE, "новый": NEW_A, "подожду": VOICE, "позже": say(WAITS_T),
         "в телеграм": TG_ANS, "дальше": VOICE, "помощь": say(WAIT_HELP_T), "повтори": say(ACCEPTED_T)}),
     "новый или прошлый? + вопрос": (lambda: forked(later()), {
@@ -1130,6 +1130,35 @@ TABLE = {
         "позже": REST, "в телеграм": REST, "дальше": NEXT, "помощь": say(HELP_TEXT + " Продолжить?"),
         "повтори": say(S1 + " Продолжить?")}),
 }
+
+
+class ReadyOnWaitTests(unittest.TestCase):
+    def test_new_phrase_is_held_until_the_dialog_choice(self):
+        question = "а завтра?"
+        choices = (
+            ("новый", "hya.dialog.new", (d.Telegram(CONV, SENT, ANS), d.Ask(FRESH, question), d.Hold())),
+            ("прошлый", "hya.dialog.continue", VOICE),
+        )
+        for text, intent, expected in choices:
+            with self.subTest(choice=text):
+                base = ready_on_wait()
+                st, acts = d.step(base, utter(question))
+                self.assertEqual(acts, FORK)
+                self.assertEqual((st.prompt, st.held, st.answer), (d.NEW_OR_OLD, question, base.answer))
+                st, acts = d.step(st, utter(text, intent, now=101.0, turn="s1-2"))
+                self.assertEqual(acts, expected)
+                self.assertEqual(st.held, "")
+
+    def test_rejected_and_empty_phrases_keep_the_wait_prompt_and_answer(self):
+        base = ready_on_wait()
+        st, acts = d.step(base, utter("/new"))
+        self.assertEqual(acts, say(REJECT))
+        self.assertEqual((st.prompt, st.last_said, st.answer), (d.WAIT, ACCEPTED_T, base.answer))
+        st, acts = d.step(st, utter("", now=101.0, turn="s1-2"))
+        self.assertEqual(acts, say(ACCEPTED_T))
+        self.assertEqual((st.prompt, st.answer), (d.WAIT, base.answer))
+        _, acts = d.step(st, utter("да", YES, now=102.0, turn="s1-3"))
+        self.assertEqual(acts, VOICE)
 
 
 class TableTests(unittest.TestCase):

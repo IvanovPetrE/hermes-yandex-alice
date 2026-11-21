@@ -26,9 +26,13 @@ SECRET, SKILL, OWNER, CHAT = "s3cr3t-path", "skill", "owner", "100500"
 QUESTION = "расскажи про погоду в Лимасоле"
 
 
-def alice_body(text=QUESTION, *, user=OWNER, skill=SKILL, session="s1", message=1, new=False) -> bytes:
+def alice_body(text=QUESTION, *, user=OWNER, skill=SKILL, session="s1", message=1, new=False,
+               intents=()) -> bytes:
+    request = {"original_utterance": text, "command": text, "type": "SimpleUtterance"}
+    if intents:
+        request["nlu"] = {"intents": {intent: {} for intent in intents}}
     return json.dumps({
-        "request": {"original_utterance": text, "command": text, "type": "SimpleUtterance"},
+        "request": request,
         "session": {"session_id": session, "message_id": message, "skill_id": skill, "new": new,
                     "user": {"user_id": user}},
         "version": "1.0",
@@ -426,7 +430,8 @@ class RestartTests(AdapterCase):
         self.addAsyncCleanup(second.disconnect)
         await second.send(chat, "Итог после переподключения.", reply_to=event.message_id, metadata={"notify": True})
         await first.on_processing_complete(event, None)   # поздний конец хода у прежнего экземпляра ничего не ломает
-        self.assertEqual(await self.say("да", message=2), ("Итог после переподключения.", False))
+        self.assertEqual(await self.say("да", message=2, intents=("YANDEX.CONFIRM",)),
+                         ("Итог после переподключения.", False))
 
 
 class LostTurnTests(AdapterCase):
@@ -454,7 +459,8 @@ class LostTurnTests(AdapterCase):
         self.assertEqual(sent.count("Алиса:\nПоздний итог."), 1)
         self.assertEqual(ad._engine.state.question.alive_at, started)
         await ad.send(chat, "Ответ на новый вопрос.", reply_to=new.message_id, metadata={"notify": True})
-        self.assertEqual(await self.say("да", message=3), ("Ответ на новый вопрос.", False))
+        self.assertEqual(await self.say("да", message=3, intents=("YANDEX.CONFIRM",)),
+                         ("Ответ на новый вопрос.", False))
 
     async def test_late_hooks_without_start_leave_the_next_question_in_work(self):
         class NoStartGateway(HoldGateway):
@@ -475,7 +481,8 @@ class LostTurnTests(AdapterCase):
         self.assertIsNotNone(ad._engine.state.question)
         await ad.on_processing_start(new)
         await ad.send(new.source.chat_id, "Ответ на новый вопрос.", reply_to=new.message_id, metadata={"notify": True})
-        self.assertEqual(await self.say("да", message=3), ("Ответ на новый вопрос.", False))
+        self.assertEqual(await self.say("да", message=3, intents=("YANDEX.CONFIRM",)),
+                         ("Ответ на новый вопрос.", False))
 
     async def test_the_deadline_drops_the_adapter_record_and_a_late_final_goes_to_telegram(self):
         sent = self.telegram()
@@ -560,7 +567,8 @@ class RedirectedPhraseTests(AdapterCase):
         ad, sent, new = await self.redirect()
         chat = new.source.chat_id
         await ad.send(chat, "Ответ сорок пятый.", reply_to=new.message_id, metadata={"notify": True})
-        self.assertEqual(await self.say("да", message=3), ("Ответ сорок пятый.", False))
+        self.assertEqual(await self.say("да", message=3, intents=("YANDEX.CONFIRM",)),
+                         ("Ответ сорок пятый.", False))
         await self.beacon(ad, sent, chat)
         self.assertFalse(any("Ответ сорок пятый." in s for s in sent))
 
@@ -580,7 +588,8 @@ class RedirectedPhraseTests(AdapterCase):
 
         ad, sent, new = await self.redirect(during_lost_turn=refused_card)
         await ad.send(new.source.chat_id, "Ответ сорок пятый.", reply_to=new.message_id, metadata={"notify": True})
-        self.assertEqual(await self.say("да", message=3), ("Ответ сорок пятый.", False))
+        self.assertEqual(await self.say("да", message=3, intents=("YANDEX.CONFIRM",)),
+                         ("Ответ сорок пятый.", False))
 
     async def test_sends_of_the_redirected_run_keep_the_question_alive(self):
         ad, sent, new = await self.redirect()
@@ -591,7 +600,8 @@ class RedirectedPhraseTests(AdapterCase):
         ad._engine.tick()
         self.assertIsNotNone(ad._engine.state.question)
         await ad.send(chat, "Ответ сорок пятый.", reply_to=new.message_id, metadata={"notify": True})
-        self.assertEqual(await self.say("да", message=3), ("Ответ сорок пятый.", False))
+        self.assertEqual(await self.say("да", message=3, intents=("YANDEX.CONFIRM",)),
+                         ("Ответ сорок пятый.", False))
 
     async def test_a_final_with_another_anchor_still_goes_to_telegram(self):
         ad, sent, new = await self.redirect()
@@ -633,7 +643,7 @@ class RecoveredSendTests(AdapterCase):
         self.addAsyncCleanup(second.disconnect)
         second._drop_turn(chat)   # ответ из леджера приходит вне хода
         await second.send(chat, self.MARKED)
-        self.assertEqual(await self.say("да", message=2), ("Текст рассылки.", False))
+        self.assertEqual(await self.say("да", message=2, intents=("YANDEX.CONFIRM",)), ("Текст рассылки.", False))
 
 
 class SendTests(AdapterCase):

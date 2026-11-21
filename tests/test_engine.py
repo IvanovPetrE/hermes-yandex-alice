@@ -122,7 +122,7 @@ class AskedMidTests(unittest.IsolatedAsyncioTestCase):
         h = Harness(budget=0.05)
         await h.engine.handle(rq("вопрос", mid="1"))
         h.engine.on_final(h.conv, "Ответ", False)
-        await h.engine.handle(rq("да", mid="2"))   # забрать ответ
+        await h.engine.handle(rq("да", mid="2", nlu={"intents": {"YANDEX.CONFIRM": {}}}))   # забрать ответ
         await h.engine.handle(rq("второй вопрос", mid="3"))
         self.assertEqual(len(h.ask_ids), 2)
         self.assertEqual(h.engine.asked_mid(h.conv), h.ask_ids[1])
