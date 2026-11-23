@@ -143,6 +143,94 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.open().load(), d.State(conversation="c2"))
 
 
+class ConversationKeptTests(unittest.TestCase):
+    """HERMESYAND-28: нечитаемый снимок не обрывает беседу Hermes — conversation лежит отдельно от снимка."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "state.db"
+
+    def open(self) -> "storage.Store":
+        store = storage.Store(sqlite3.connect(self.path))
+        self.addCleanup(store.close)
+        return store
+
+    def corrupt(self, text: str) -> None:
+        conn = sqlite3.connect(self.path)
+        with conn:
+            conn.execute("UPDATE state SET data = ? WHERE id = 1", (text,))
+        conn.close()
+
+    def test_unreadable_snapshot_keeps_the_conversation_and_drops_the_rest(self) -> None:
+        self.open().save(FULL)
+        other_version = _good()
+        other_version["v"] = 2
+        self.corrupt(json.dumps(other_version))
+        self.assertEqual(self.open().load(), d.State(conversation="c1"))
+
+    def test_every_kind_of_bad_snapshot_keeps_the_conversation(self) -> None:
+        for name, text in _bad_records().items():
+            with self.subTest(name):
+                self.open().save(FULL)
+                self.corrupt(text)
+                self.assertEqual(self.open().load(), d.State(conversation="c1"))
+
+    def test_a_readable_snapshot_wins_over_the_kept_conversation(self) -> None:
+        self.open().save(FULL)
+        conn = sqlite3.connect(self.path)
+        with conn:
+            conn.execute("UPDATE meta SET value = 'other' WHERE key = 'conversation'")
+        conn.close()
+        self.assertEqual(self.open().load(), FULL)
+
+    def test_nothing_stored_gives_nothing(self) -> None:
+        self.assertIsNone(self.open().load())
+
+    def test_an_unreadable_snapshot_without_a_kept_conversation_gives_nothing(self) -> None:
+        self.open().save(FULL)
+        conn = sqlite3.connect(self.path)
+        with conn:
+            conn.execute("DELETE FROM meta")
+        conn.close()
+        self.corrupt("{")
+        self.assertIsNone(self.open().load())
+
+    def test_an_empty_kept_conversation_is_ignored(self) -> None:
+        self.open().save(FULL)
+        conn = sqlite3.connect(self.path)
+        with conn:
+            conn.execute("UPDATE meta SET value = '' WHERE key = 'conversation'")
+        conn.close()
+        self.corrupt("{")
+        self.assertIsNone(self.open().load())
+
+    def test_an_explicit_reset_moves_the_kept_conversation(self) -> None:
+        store = self.open()
+        store.save(FULL)
+        store.save(d.State(conversation="c2"))
+        self.corrupt("{")
+        self.assertEqual(self.open().load(), d.State(conversation="c2"))
+
+    def test_the_log_names_the_reason_and_no_data(self) -> None:
+        cases = {"other version": "other_version", "extra field": "extra_field", "missing field": "missing_field",
+                 "int as text": "bad_type", "not json": "invalid_json", "not an object": "not_object"}
+        records = _bad_records()
+        records["other keys"] = json.dumps({"v": 1})
+        cases["other keys"] = "bad_shape"
+        for name, reason in cases.items():
+            with self.subTest(name):
+                self.open().save(FULL)
+                self.corrupt(records[name])
+                with self.assertLogs("storage", level="WARNING") as logs:
+                    self.open().load()
+                self.assertEqual(len(logs.records), 1)
+                message = logs.records[0].getMessage()
+                self.assertIn(reason, message)
+                for secret in ("c1", "Алиса", "подробно", "Первая часть"):
+                    self.assertNotIn(secret, message)
+
+
 class OutboxTests(unittest.TestCase):
     """Отправки в Telegram до исхода (этап 5): переживают перезапуск, исход удаляет текст."""
 

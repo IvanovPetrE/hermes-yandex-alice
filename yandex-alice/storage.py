@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import asdict
 
@@ -19,12 +20,16 @@ except ImportError:  # тесты импортируют модули плаги
     import delivery  # type: ignore[no-redef]
     import dialog as d  # type: ignore[no-redef]
 
+logger = logging.getLogger(__name__)
+
 VERSION = 1
 BUSY_MS = 200   # пишет только этот адаптер; 5 с из plugin_db больше бюджета ответа Алисе (~3,5 с)
 _SCHEMA = "CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL)"
 # Отправки в Telegram до исхода (этап 5): строка удаляется с исходом; снимок `state` и его VERSION не затрагиваются.
 _OUTBOX = ("CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation TEXT NOT NULL, "
            "text TEXT NOT NULL, fallback TEXT NOT NULL, created_at REAL NOT NULL, attempts INTEGER NOT NULL)")
+# conversation беседы Hermes — отдельно от снимка и его VERSION (HERMESYAND-28): переживает нечитаемый снимок.
+_META = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
 
 # Типы полей — явно, а не из аннотаций: формат записи меняется только вместе с VERSION.
 STR, FLOAT, INT, BOOL, TEXTS, FLOATS = "str", "float", "int", "bool", "texts", "floats"
@@ -50,12 +55,16 @@ def encode(state: d.State) -> str:
 
 
 class _Bad(Exception):
-    pass
+    """Запись не читается; `reason` — только класс причины (в лог), без данных."""
+
+    def __init__(self, reason: str = "bad_type"):
+        super().__init__(reason)
+        self.reason = reason
 
 
 def _number(raw) -> float:
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        raise _Bad
+        raise _Bad("bad_type")
     return float(raw)
 
 
@@ -74,12 +83,16 @@ def _value(kind, raw):
         return tuple(raw)
     if kind == FLOATS and isinstance(raw, list):
         return tuple(_number(x) for x in raw)
-    raise _Bad
+    raise _Bad("bad_type")
 
 
 def _record(cls, fields: dict, raw):
-    if not isinstance(raw, dict) or not set(fields) - _ADDED <= set(raw) <= set(fields):
-        raise _Bad
+    if not isinstance(raw, dict):
+        raise _Bad("bad_type")
+    if not set(fields) - _ADDED <= set(raw):
+        raise _Bad("missing_field")
+    if not set(raw) <= set(fields):
+        raise _Bad("extra_field")
     values = {}
     for name, kind in fields.items():
         if name in _ADDED and name not in raw:
@@ -93,15 +106,29 @@ def _record(cls, fields: dict, raw):
     return cls(**values)
 
 
-def decode(text: str) -> d.State | None:
-    """Снимок или None: чужая версия, лишнее или недостающее поле, неверный тип — без исключений (начать с чистого)."""
+def _read(text: str) -> tuple[d.State | None, str]:
+    """`(снимок, "")` или `(None, класс причины)`: invalid_json, not_object, bad_shape, other_version,
+    missing_field, extra_field, bad_type."""
     try:
         raw = json.loads(text)
-        if not isinstance(raw, dict) or set(raw) != {"v", "state"} or raw["v"] != VERSION:
-            return None
-        return _record(d.State, STATE_FIELDS, raw["state"])
-    except (_Bad, ValueError, TypeError):
-        return None
+        if not isinstance(raw, dict):
+            return None, "not_object"
+        if set(raw) != {"v", "state"}:
+            return None, "bad_shape"
+        if raw["v"] != VERSION:
+            return None, "other_version"
+        return _record(d.State, STATE_FIELDS, raw["state"]), ""
+    except _Bad as bad:
+        return None, bad.reason
+    except ValueError:
+        return None, "invalid_json"
+    except TypeError:
+        return None, "bad_type"
+
+
+def decode(text: str) -> d.State | None:
+    """Снимок или None: чужая версия, лишнее или недостающее поле, неверный тип — без исключений (начать с чистого)."""
+    return _read(text)[0]
 
 
 class Store:
@@ -113,14 +140,26 @@ class Store:
         with conn:
             conn.execute(_SCHEMA)
             conn.execute(_OUTBOX)
+            conn.execute(_META)
 
     def load(self) -> d.State | None:
+        """Снимок; нечитаемый (чужая версия, лишнее поле…) — чистое состояние с прежним `conversation` из `meta`
+        (HERMESYAND-28), а без него — `None`. Читаемый снимок главнее `meta`."""
         row = self._conn.execute("SELECT data FROM state WHERE id = 1").fetchone()
-        return None if row is None else decode(row[0])
+        if row is None:
+            return None
+        state, reason = _read(row[0])
+        if state is not None:
+            return state
+        logger.warning("state snapshot unreadable (%s): starting clean", reason)   # только класс: в снимке тексты беседы
+        kept = self._conn.execute("SELECT value FROM meta WHERE key = 'conversation'").fetchone()
+        return d.State(conversation=kept[0]) if kept and kept[0] else None
 
     def save(self, state: d.State) -> None:
-        with self._conn:
+        with self._conn:   # снимок и conversation — одной транзакцией
             self._conn.execute("INSERT OR REPLACE INTO state (id, data) VALUES (1, ?)", (encode(state),))
+            self._conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('conversation', ?)",
+                               (state.conversation,))
 
     # --- отправки в Telegram до исхода (этап 5) ---------------------------------------------------------------------
 
