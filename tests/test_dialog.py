@@ -167,7 +167,7 @@ class ForkTests(unittest.TestCase):
         st, acts = d.step(later(), d.Final(now=150.0, conversation=CONV, text="Солнечно.", internal=True))
         self.assertEqual(acts, ())
         _, acts = d.step(st, launch(now=160.0))
-        self.assertEqual(acts, (d.Say("Ответ на прошлый вопрос готов. Скинуть?"),))
+        self.assertEqual(acts, (d.Say("Ответ на прошлый вопрос готов. Прочитать?"),))
 
     def test_promised_telegram_answer_is_voiced_too_if_waited_for(self):
         st, _ = d.step(later(), utter("пришли в телеграм", "hya.telegram"))
@@ -197,7 +197,7 @@ def launch(text="", now=200.0):
 class LaunchTests(unittest.TestCase):
     def test_empty_launch_with_ready_answer_offers_it(self):
         st, acts = d.step(ready(), launch())
-        self.assertEqual(acts, (d.Say("Ответ на прошлый вопрос готов. Скинуть?"),))
+        self.assertEqual(acts, (d.Say("Ответ на прошлый вопрос готов. Прочитать?"),))
         self.assertEqual(st.prompt, d.READY)
 
     def test_empty_launch_continues_a_recent_dialog(self):
@@ -252,7 +252,7 @@ class LaunchTests(unittest.TestCase):
 
     def test_launch_drops_an_unresolved_fork(self):
         st, acts = d.step(forked(ready()), launch())
-        self.assertEqual((acts, st.held), ((d.Say("Ответ на прошлый вопрос готов. Скинуть?"),), ""))
+        self.assertEqual((acts, st.held), ((d.Say("Ответ на прошлый вопрос готов. Прочитать?"),), ""))
 
 
 def sentence(i):
@@ -343,7 +343,7 @@ class HelpRepeatTests(unittest.TestCase):
                  (waiting, "Я готовлю ответ. Можно подождать, спросить ответ позже или сказать „пришли в Телеграм“. "
                            "Подождёте?"),
                  (lambda: forked(ready()), "Скажите „новый“ или „прошлый“."),
-                 (lambda: offer, HELP_TEXT + " Ответ на прошлый вопрос готов. Скинуть?"),
+                 (lambda: offer, HELP_TEXT + " Ответ на прошлый вопрос готов. Прочитать?"),
                  (reading, HELP_TEXT + " Продолжить?"))
         for base, heard in cases:
             with self.subTest(heard=heard[-30:]):
@@ -1016,7 +1016,7 @@ class RecallTests(unittest.TestCase):
 class LaunchKeepsPendingTests(unittest.TestCase):
     def test_launch_after_n_hours_with_unclaimed_answer_keeps_the_dialog(self):   # И4
         st, acts = d.step(ready(), launch(now=95.0 + 3 * HOUR))
-        self.assertEqual((acts, st.conversation), ((d.Say("Ответ на прошлый вопрос готов. Скинуть?"),), CONV))
+        self.assertEqual((acts, st.conversation), ((d.Say("Ответ на прошлый вопрос готов. Прочитать?"),), CONV))
 
 
 class PriorityTests(unittest.TestCase):
@@ -1061,7 +1061,7 @@ COLUMNS = {  # реплика владельца: (текст, интенты)
 LATER_T, ACCEPTED_T = "Хорошо, спросите ответ позже.", "Вопрос принят. Спросите ответ позже или готовы подождать?"
 NOO_T, SAY_NOO_T, WAITS_T = "Начать новый диалог или продолжить прошлый?", "Скажите „новый“ или „прошлый“.", \
     "Хорошо, ответ подождёт."
-READY_T, IN_TG_T, NEW_TG_T = "Ответ на прошлый вопрос готов. Скинуть?", "Ответ пришлю в Телеграм.", \
+READY_T, IN_TG_T, NEW_TG_T = "Ответ на прошлый вопрос готов. Прочитать?", "Ответ пришлю в Телеграм.", \
     "Ответ пришлю в Телеграм. Слушаю."
 WAIT_HELP_T = "Я готовлю ответ. Можно подождать, спросить ответ позже или сказать „пришли в Телеграм“. Подождёте?"
 ANS = ("Солнечно.",)

@@ -430,6 +430,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(h.engine.handle(rq("скинь ответ", mid="2",
                                                       nlu={"intents": {"hya.answer.get": {}}})))
         self.assertEqual(await task, "Ответ первый")
+        h.engine._budget = 5.0   # HERMESYAND-40: 0,05 с нужны первому ходу; ожидание гейта под нагрузкой их съедало
         gated = asyncio.create_task(h.engine.handle(rq("второй", mid="3")))
         await settle()
         self.assertEqual(h.asks[-1:], [(h.conv, "первый")])   # ждёт гейта (5 с)

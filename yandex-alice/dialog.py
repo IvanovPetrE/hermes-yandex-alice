@@ -598,7 +598,7 @@ def _row_wait(st: State, k: str, settings: Settings) -> tuple[State, tuple[objec
 
 
 def _row_offer(st: State, ev: Utterance, k: str, settings: Settings) -> tuple[State, tuple[object, ...]]:
-    """«Ответ на прошлый вопрос готов. Скинуть?» (М3, Д2) и «Озвучить?» (Д12, О3)."""
+    """«Ответ на прошлый вопрос готов. Прочитать?» (М3, Д2) и «Озвучить?» (Д12, О3)."""
     if k in _SAY_YES:
         return _old(st)
     if k in _SAY_NO:
