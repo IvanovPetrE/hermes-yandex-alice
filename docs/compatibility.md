@@ -48,7 +48,11 @@
 
 Опора на внутреннее поведение Hermes, закреплённая тестами (обновление ревизии ломает тест, а не Алису):
 - штатная остановка посреди хода: `GatewayRunner._draining` истинно, когда первый запуск получает `on_processing_complete` без итога
-  (исход `success`); адаптер читает его через `adapter.gateway_runner` (`_shutting_down`) и тогда не закрывает вопрос;
+  (исход `success` или `cancelled`); адаптер читает его через `adapter.gateway_runner` (`_shutting_down`) и тогда не закрывает вопрос;
+  дальнейшее у Hermes v0.23.2 недетерминировано (HERMESYAND-35, 2 из 6 прогонов на сервере): агент разматывается за ~30 мс, но
+  итог прерванного хода и отмена задачи при разрыве адаптера гоняются. Либо ход дозапускается (ответ голосом), либо итог уже
+  в транскрипте и `_ledger_crash_left_replies` ставит его в долг доставки без дозапуска — владелец слышит «Не получилось».
+  Тест `test_graceful_stop_mid_turn…` принимает обе ветки; это известное ограничение Hermes, а не плагина;
 - строки-границы упавшего хода в истории («Your request was not processed. Send it again if you still want me to carry it out.»,
   «This turn did not complete. Some actions may already have run; verify their effects before resending.», `agent/turn_failure_copy.py`)
   узнаются по дословной форме и озвучиваются как «Не получилось»;

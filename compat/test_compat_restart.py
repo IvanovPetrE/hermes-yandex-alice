@@ -279,12 +279,17 @@ async def sc_resume(w, how: str, token: str) -> None:
 
 
 async def sc_resume_stop(w) -> None:
-    """Штатная остановка: первый запуск получает `on_processing_complete(cancelled)`, адаптер закрывает вопрос."""
+    """Штатная остановка посреди хода. Исход у Hermes v0.23.2 недетерминирован (HERMESYAND-35): агент разматывается за
+    ~30 мс, но итог прерванного хода и отмена задачи при разрыве адаптера гоняются. Либо ход дозапускается (внутренний
+    ход, ответ голосом), либо итог успел лечь в транскрипт и `_ledger_crash_left_replies` ставит его в долг доставки
+    вместо дозапуска — владелец слышит «Не получилось»; исход `first_complete` — `success` или `cancelled` в обоих случаях."""
     first, second = await mid_turn_restart(w, "stop", "r01")
     w.state["first_complete"] = next((op for op in w.journal if op.op == "complete" and op.pid == first.pid), None)
     w.state["first_finals"] = [op for op in w.journal if op.op == "send" and op.pid == first.pid and op.reply_to]
     w.state["reply"] = await w.confirm_until("r01", NOT_WAITING)
-    resumed = await w.wait_op(lambda op: op.op == "send" and op.pid == second.pid and RESUMED in op.content, 60.0)
+    resumed = None
+    if w.state["reply"] == RESUMED:   # ветка «долг доставки» дозапуска не ждёт: 60 с впустую
+        resumed = await w.wait_op(lambda op: op.op == "send" and op.pid == second.pid and RESUMED in op.content, 60.0)
     w.state["internal"] = internal_start(w, second)
     w.state["resumed_send"] = resumed
     w.state["notes"] = list(w.script.resume_notes)
@@ -428,16 +433,22 @@ class GroupR(_Group):
         self.assertEqual(st["repeat"], RESUMED, "итог автопродолжения должен лежать в истории и читаться")
 
     def test_graceful_stop_mid_turn_resumes_and_answers(self) -> None:
-        """Штатная остановка посреди хода: первый запуск получает `on_processing_complete` без итога (исход в v0.23.2 —
-        `success`, в пробе S5 на v0.23.1 — `cancelled`) при `GatewayRunner._draining`; адаптер вопрос не закрывает, и
-        после старта Hermes доводит ход (внутренний ход, заметка «CONTINUE») — ответ звучит голосом, как после SIGKILL."""
+        """Штатная остановка посреди хода: первый запуск получает `on_processing_complete` без итога (исход `success` или
+        `cancelled`) при `GatewayRunner._draining`; адаптер вопрос не закрывает. Дальше Hermes v0.23.2 недетерминирован
+        (HERMESYAND-35, гонка внутри Hermes): либо доводит ход (внутренний ход, заметка «CONTINUE») — ответ звучит
+        голосом, как после SIGKILL; либо итог прерванного хода уже в транскрипте и уходит в долг доставки, дозапуска нет —
+        владелец слышит «Не получилось», а не зависание в «ещё думаю»."""
         w = self.stop_w
         self.scenario_ok(w, "r_stop")
         st = w.state
         self.assertTrue(st["stopped_clean"])
         self.assertIsNotNone(st["first_complete"], "хука завершения у первого запуска не было")
         self.assertFalse(st["first_finals"], "у первого запуска не должно быть итога: сцена ничего не доказывает")
-        self.assertEqual(st["reply"], RESUMED)
+        if st["reply"] != RESUMED:   # ветка «долг доставки»: ход не дозапущен, вопрос закрыт отказом
+            self.assertEqual(st["reply"], FAILED)
+            self.assertIsNone(st["internal"], "ход не дозапускается, а внутренний ход есть")
+            self.assertIsNone(st["resumed_send"])
+            return
         self.assertIsNotNone(st["internal"], "после перезапуска не было внутреннего хода")
         self.assertIsNone(st["internal"].mid)
         self.assertIn("CONTINUE the interrupted task", st["notes"][0])   # interactive_resume=False
