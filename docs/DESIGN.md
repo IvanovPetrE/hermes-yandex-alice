@@ -196,7 +196,9 @@ settings) -> (state, actions)`, состояние — неизменяемые 
 - По S7 (`docs/RECON.md`, «S7» → «Выводы для адаптера»): `RecallLast` → чтение истории Hermes в рабочем потоке под сроком
   ~1,5 с (`asyncio.to_thread` + `wait_for`), одно чтение за раз; профиль и путь к `state.db` целевого профиля — один раз в
   `connect()` (маршрут `yandex_alice` из `load_gateway_config().profile_routes`, дом `…/profiles/<имя>`); на чтении —
-  `SessionDB(read_only=True)` → `find_session_by_origin` → `resolve_resume_session_id` → `get_messages` порциями по 20; правило
+  `open_persistence_reader(<state.db>)` → `routing.session_for_origin` → `lineage.resolve_resume_target` →
+  `messages.read_transcript(TranscriptRead(latest=True, …))` порциями по 20 (хранилище Hermes v0.23.3; до него —
+  `SessionDB(read_only=True)`, в v0.23.3 это заглушка без этих методов, HERMESYAND-38); правило
   «последнего ответа» (`last_answer`, `read_tail`, `pick_profile`) — **в чистый модуль** (`yandex-alice/history.py`, без Hermes,
   с тестами; **перенесено срезом «а»**) из пробы S7 (`prototypes/s7/plugin/history.py`, удалена, версия `bf437ef`); `/proc` не читать; текст из истории в логи не писать.
 - По S6 (`docs/RECON.md`, «S6» → «Выводы»): `platform_hint` — правило `deliver=telegram:<чат>` для cron;

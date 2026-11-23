@@ -687,5 +687,36 @@ class ValidateConfigTests(AdapterCase):
                     self.assertIs(adapter.validate_config(None), ok)
 
 
+class HistoryReadTests(AdapterCase):
+    """«Повтори» читает историю через хранилище Hermes v0.23.3 (`persistence_assembly.open_persistence_reader`):
+    `hermes_state.SessionDB` там — заглушка без `find_session_by_origin` (HERMESYAND-38)."""
+
+    def history(self, **store):
+        (hs.world.home / "state.db").write_bytes(b"")
+        hs.world.store = hs.FakeStore(**store)
+        return self.make()
+
+    def test_reads_last_answer_of_the_resume_tip(self):
+        ad = self.history(origins={("yandex_alice", "s1"): "root"}, tips={"root": "tip"},
+                          rows={"tip": [{"role": "user", "content": "вопрос"},
+                                        {"role": "assistant", "content": "ответ агента"},
+                                        {"role": "assistant", "content": "", "tool_calls": [{"id": "t"}]}]})
+        self.assertEqual(ad._read_history("s1"), ("found", "ответ агента"))
+        self.assertEqual(hs.world.reader_targets, [hs.world.home / "state.db"])
+        session_id, request = hs.world.store.reads[0]
+        self.assertEqual((session_id, request.latest, request.limit, request.offset), ("tip", True, 20, 0))
+
+    def test_no_session_for_the_conversation_is_missing(self):
+        ad = self.history()
+        self.assertEqual(ad._read_history("s1"), ("missing", None))
+
+    def test_store_failure_is_an_error_without_text_in_logs(self):
+        (hs.world.home / "state.db").write_bytes(b"")
+        ad = self.make()
+        with self.assertLogs("hya_plugin", level="WARNING") as logs:
+            self.assertEqual(ad._read_history("s1"), ("error", None))
+        self.assertEqual(logs.output, ["WARNING:hya_plugin.adapter:history read failed: FileNotFoundError"])
+
+
 if __name__ == "__main__":
     unittest.main()

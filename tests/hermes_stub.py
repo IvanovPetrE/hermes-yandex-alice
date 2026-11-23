@@ -8,6 +8,7 @@ Telegram и сбой базы; `world.reset()` — в `setUp`. Файл не `te
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib.util
 import socket
 import sqlite3
@@ -42,6 +43,8 @@ class World:
         self.sender = None                        # standalone_sender_fn Telegram или None
         self.profile_routes: list = []
         self.on_message = None                    # async (adapter, event) — «шлюз»
+        self.store = None                         # хранилище для open_persistence_reader (FakeStore) или None
+        self.reader_targets: list = []            # с чем открывали open_persistence_reader
 
     def close(self) -> None:
         if self._tmp is not None:
@@ -152,6 +155,65 @@ def _plugin_db(name, filename="data.db"):
     return sqlite3.connect(folder / filename, check_same_thread=False)
 
 
+# --- persistence_assembly / persistence (хранилище сессий Hermes v0.23.3) ------------------------------------------------
+
+@dataclass(frozen=True)
+class TranscriptRead:
+    """Подмножество `persistence.conversation.messages.TranscriptRead`: страница расшифровки."""
+    limit: int | None = None
+    offset: int = 0
+    latest: bool = False
+
+
+@contextlib.contextmanager
+def _open_persistence_reader(target, **kw):
+    world.reader_targets.append(target)
+    if world.store is None:
+        raise FileNotFoundError("no store")
+    yield world.store
+
+
+class FakeRow:
+    def __init__(self, row: dict) -> None:
+        self._row = row
+
+    def as_wire_row(self) -> dict:
+        return dict(self._row)
+
+
+class FakeStore:
+    """`store.routing.session_for_origin`, `store.lineage.resolve_resume_target`, `store.messages.read_transcript`.
+    `origins` — {(platform, chat_id): session_id}, `tips` — {session_id: tip}, `rows` — {session_id: [dict, …]} (старые
+    первыми); `reads` — запросы `read_transcript`."""
+
+    def __init__(self, *, origins=None, tips=None, rows=None) -> None:
+        self.origins, self.tips, self.rows = dict(origins or {}), dict(tips or {}), dict(rows or {})
+        self.reads: list = []
+        store = self
+
+        class Routing:
+            def session_for_origin(self, *, platform, chat_id, thread_id=None, user_id=None):
+                return store.origins.get((platform, chat_id))
+
+        class Lineage:
+            def resolve_resume_target(self, session_id):
+                return store.tips.get(session_id, session_id)
+
+        class Messages:
+            def read_transcript(self, session_id, request=TranscriptRead()):
+                store.reads.append((session_id, request))
+                rows = store.rows.get(session_id, [])
+                if request.latest:
+                    end = len(rows) - request.offset
+                    start = max(0, end - request.limit) if request.limit is not None else 0
+                    page = rows[start:max(end, 0)]
+                else:
+                    page = rows[request.offset:][:request.limit]
+                return tuple(FakeRow(r) for r in page)
+
+        self.routing, self.lineage, self.messages = Routing(), Lineage(), Messages()
+
+
 def _module(name: str, **attrs) -> types.ModuleType:
     mod = types.ModuleType(name)
     mod.__dict__.update(attrs)
@@ -180,6 +242,10 @@ def install() -> None:
     _module("tools")
     _module("tools.approval", resolve_gateway_approval=lambda *a, **k: 0, resolve_gateway_approval_card=lambda *a, **k: 0)
     _module("hermes_state")
+    _module("persistence_assembly", open_persistence_reader=_open_persistence_reader)
+    _module("persistence")
+    _module("persistence.conversation")
+    _module("persistence.conversation.messages", TranscriptRead=TranscriptRead)
 
 
 def load_plugin() -> types.ModuleType:
