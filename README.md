@@ -1,5 +1,7 @@
 # hermes-yandex-alice
 
+![Yandex Alice for Hermes](assets/hero.png)
+
 Яндекс Алиса как платформа шлюза [Hermes Agent](https://github.com/NousResearch/hermes-agent). Плагин
 `kind: platform` принимает webhook приватного навыка Яндекс Диалогов, передаёт реплику в обычную сессию шлюза
 (профиль задаётся `gateway.profile_routes`), озвучивает ответ агента и по просьбе присылает подробности в Telegram.

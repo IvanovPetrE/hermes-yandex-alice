@@ -1,5 +1,7 @@
 # Yandex Alice for Hermes
 
+![Yandex Alice for Hermes](https://raw.githubusercontent.com/IvanovPetrE/hermes-yandex-alice/main/assets/hero.png)
+
 A `kind: platform` plugin that makes [Yandex Alice](https://alice.yandex.ru/) a gateway platform of
 [Hermes Agent](https://github.com/NousResearch/hermes-agent). It receives the webhook of a **private** Yandex Dialogs
 skill, passes the utterance to an ordinary gateway session (the profile is chosen by `gateway.profile_routes`), speaks
