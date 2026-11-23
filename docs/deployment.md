@@ -36,6 +36,43 @@ journalctl --user -u hermes-gateway | grep yandex_alice     # или ~/.hermes/l
 
 Ожидаем `✓ yandex_alice connected`. Без `ALICE_PATH_SECRET` или `ALICE_SKILL_ID` адаптер не стартует и пишет причину.
 
+## 2а. Hermes в Docker
+
+Вместо разделов 1–2, если шлюз Hermes работает в контейнере (проверено на образе `nousresearch/hermes-agent:v0.23.2`).
+Каталог данных внутри контейнера — `/opt/data` (`HERMES_HOME`); шлюз работает от пользователя `hermes`. `<контейнер>` —
+имя вашего контейнера со шлюзом.
+
+```
+# 1. Плагин в каталог данных; docker cp создаёт файлы от root, поэтому chown
+docker exec -u hermes <контейнер> mkdir -p /opt/data/plugins
+docker cp yandex-alice <контейнер>:/opt/data/plugins/
+docker exec <контейнер> chown -R hermes:hermes /opt/data/plugins/yandex-alice
+docker exec -u hermes <контейнер> hermes plugins validate /opt/data/plugins/yandex-alice
+
+# 2. Включить плагин и платформу
+docker exec -u hermes <контейнер> hermes plugins enable yandex-alice
+docker exec -u hermes <контейнер> hermes config set platforms.yandex_alice.enabled true
+docker exec -u hermes <контейнер> hermes config set platforms.yandex_alice.extra.port 8789
+
+# 3. Переменные — в /opt/data/.env (имена и смысл — в configuration.md)
+docker exec -u hermes <контейнер> sh -c 'printf "ALICE_PATH_SECRET=%s\nALICE_SKILL_ID=<skill-id>\n" "$(openssl rand -hex 32)" >> /opt/data/.env'
+
+# 4. Перезапуск шлюза и проверка
+docker exec -u hermes <контейнер> hermes gateway restart --detach -y
+docker exec <контейнер> grep yandex_alice /opt/data/logs/gateway.log     # ждём «✓ yandex_alice connected»
+```
+
+- `docker cp` с Windows принимает только путь относительно текущего каталога (`cd` в папку с `yandex-alice`).
+- Секрет генерируется внутри контейнера и в терминал не печатается; в историю shell его не вводите. Узнать его для
+  прокси можно, прочитав `/opt/data/.env` на хосте; не выводите файл целиком.
+- `config set` для `platforms.yandex_alice.*` на v0.23.2 прошёл без `--force`. Если ваша версия Hermes откажет
+  («неизвестный ключ»), добавьте `--force`: ключ платформы плагина может отсутствовать в схеме.
+- `hermes plugins enable` дописывает плагин в `plugins.enabled` в `config.yaml`; не удаляйте и не пересоздавайте этот файл
+  после включения: плагин молча перестанет загружаться, а в логе будет «No messaging platforms enabled».
+- Маршрут `gateway.profile_routes` (если реплики идут в другой профиль) — в [configuration.md](configuration.md#configyaml).
+- Listener слушает только `127.0.0.1` контейнера. Внешний прокси увидит его лишь при `network_mode: host` у контейнера со
+  шлюзом (или внутри того же сетевого пространства имён). Общая bridge-сеть не поможет.
+
 ## 3. Caddy в Docker
 
 `compose.yaml` (только 443; сертификаты Let's Encrypt через TLS-ALPN-01, порт 80 не нужен):
@@ -124,6 +161,42 @@ ALICE_PATH_SECRET=<ALICE_PATH_SECRET>
    значит, что путь не совпал).
 2. Запрос с чужим `skill_id` должен вернуть 200 с текстом «Этот навык работает только для владельца».
 3. Живой запрос через приложение Алисы: ответ приходит, в логе шлюза нет ошибок адаптера.
+
+### Локальная проверка без Яндекса
+
+Запрос шлют прямо в listener. В Docker — изнутри контейнера (`docker exec`, в образе есть `curl`); без Docker —
+с хоста. Значения `<skill-id>`, `<user-id>` и `session_id` ниже — плейсхолдеры; секрет берётся из `.env`, не печатается.
+
+Тело запроса (файл `req.json`; `skill_id` подставьте нужный):
+
+```json
+{
+  "request": {"original_utterance": "привет", "command": "привет", "type": "SimpleUtterance"},
+  "version": "1.0",
+  "session": {
+    "session_id": "test-session", "message_id": 1, "skill_id": "<skill-id>", "new": true,
+    "user": {"user_id": "<user-id>"}
+  }
+}
+```
+
+```
+docker exec <контейнер> sh -c 'set -a; . /opt/data/.env; set +a;
+  curl -s -w "\nHTTP %{http_code}\n" --data-binary @/tmp/req.json http://127.0.0.1:8789/$ALICE_PATH_SECRET'
+```
+
+(перед этим `docker cp req.json <контейнер>:/tmp/req.json`).
+
+| Запрос | Ответ |
+|---|---|
+| `skill_id` чужой | HTTP 200, «Этот навык работает только для владельца.», `end_session: true` |
+| `skill_id` верный, `ALICE_OWNER_USER_ID` пуст (режим привязки) | HTTP 200, «Навык ещё не привязан к владельцу.», `end_session: true`; в логе шлюза однажды печатается `user_id` запроса |
+| любой, путь не равен `ALICE_PATH_SECRET` | HTTP 404 без тела |
+| реплика `ping` | HTTP 200, `pong` |
+
+**Не проверяйте телом с `user_id` владельца:** при заданном `ALICE_OWNER_USER_ID` такой запрос проходит в боевую сессию
+Hermes — тратит токены, пишет в историю беседы и может отправить сообщение в Telegram. Для проверки оставьте
+`ALICE_OWNER_USER_ID` пустым или используйте чужой `skill_id`.
 
 Для первичной привязки нужен ID из запроса Яндекса. Особенности журналирования описаны в
 [конфигурации](configuration.md#предупреждения).

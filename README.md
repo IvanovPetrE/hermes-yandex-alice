@@ -61,7 +61,7 @@ Python 3.11–3.14 (диапазон Hermes). CI — `.github/workflows/tests.ym
 
 - [Конфигурация](docs/configuration.md) — переменные, параметры, профили, Telegram, предупреждения.
 - [Навык и интенты](docs/yandex-dialogs.md) — настройка консоли Диалогов, грамматики.
-- [Развёртывание](docs/deployment.md) — установка, Caddy, Docker.
+- [Развёртывание](docs/deployment.md) — установка (в том числе Hermes в Docker), Caddy, проверка запросом.
 - [Откат](docs/rollback.md)
 - [Совместимость](docs/compatibility.md) — проверенная версия Hermes.
 - [Техническая спецификация](docs/DESIGN.md) — архитектура и поведение плагина.
