@@ -36,6 +36,8 @@ esac
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 CHECKOUT=$(cd "$CHECKOUT" && pwd)
+# Абсолютный путь без разворота симлинка (venv-python — симлинк): ниже `cd "$ROOT"`, относительный путь там не найдётся.
+PY=$(cd "$(dirname "$PY")" && pwd)/$(basename "$PY")
 
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/hya-compat-XXXXXX")
 trap 'rm -rf -- "$ROOT"' EXIT
