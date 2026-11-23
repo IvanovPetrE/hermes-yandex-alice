@@ -1,27 +1,31 @@
-# Черновик манифеста: поля сверены с adding-platform-adapters.md (Hermes v0.23.1; requires_hermes — v0.23.3, HERMESYAND-38),
-# `hermes plugins validate` — на сервере после установки (этап 3, срез «б», б3).
+# Манифест плагина. Поля — по adding-platform-adapters.md; проверка — `hermes plugins validate`.
+# requires_hermes дублируется в записи каталога Nous (plugin-catalog/yandex-alice.yaml) — менять вместе.
+# Нижняя граница v0.23.3: история для «повтори» читается через persistence_assembly (HERMESYAND-38).
 name: yandex-alice
 label: Yandex Alice
 kind: platform
-version: 0.0.1
-description: Яндекс Алиса как платформа шлюза Hermes — голосовой ответ с удержанием сессии, подробности в Telegram
+version: 0.1.0
+description: Yandex Alice as a Hermes gateway platform — spoken multi-turn replies from a private Yandex Dialogs skill, details in Telegram
 requires_hermes: ">=0.23.3"
 provides_hooks:
   - pre_tool_call
 requires_env:
   - name: ALICE_PATH_SECRET
-    description: "Секретная часть пути webhook навыка (64 hex)"
+    description: "Secret part of the skill webhook path (64 hex characters)"
     password: true
   - name: ALICE_SKILL_ID
-    description: "ID навыка в Яндекс Диалогах"
+    description: "Skill ID in Yandex Dialogs; requests for any other skill are refused"
     password: false
 optional_env:
   - name: ALICE_OWNER_USER_ID
-    description: "session.user.user_id владельца; пусто — режим привязки (все отказы)"
+    description: "Owner's session.user.user_id; empty means pairing mode (every request is refused)"
     password: false
   - name: ALICE_TELEGRAM_CHAT
-    description: "Чат Telegram для подробностей, внеходовых ответов и cron из голоса; бот — TELEGRAM_BOT_TOKEN профиля"
+    description: "Telegram chat for details, out-of-turn replies, voice-created cron jobs and approval cards; empty disables Telegram"
     password: false
   - name: ALICE_TELEGRAM_OWNER_ID
-    description: "user id владельца в Telegram — кто подтверждает команды; пусто — id лички ALICE_TELEGRAM_CHAT, группа без него — подтверждения отключены"
+    description: "Owner's Telegram user id, the only one who can press approval cards; empty means the id of the ALICE_TELEGRAM_CHAT private chat, a group without it disables approvals"
     password: false
+  - name: TELEGRAM_BOT_TOKEN
+    description: "Telegram bot token of the profile, used to send details and approval cards; empty disables Telegram"
+    password: true
