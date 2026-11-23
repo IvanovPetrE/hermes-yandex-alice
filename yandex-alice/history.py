@@ -1,8 +1,9 @@
 """Правило «последнего ответа» из истории Hermes (для «повтори») — без зависимостей от Hermes.
 
 Перенесено из пробы S7 (`prototypes/s7/plugin/history.py`): `last_answer`, `read_tail`, `pick_profile`. Здесь только
-чистая логика; цепочка чтения (маршруты → профиль → дом → `SessionDB(read_only=True)` → `find_session_by_origin` →
-`resolve_resume_session_id` → `get_messages`) и блокировка «одно чтение за раз» — в адаптере (этап 3, срез «б»).
+чистая логика; цепочка чтения (маршруты → профиль → дом → `open_persistence_reader` → `routing.session_for_origin` →
+`lineage.resolve_resume_target` → `messages.read_transcript`) и блокировка «одно чтение за раз» — в адаптере (этап 3,
+срез «б»; хранилище Hermes v0.23.3 — HERMESYAND-38).
 `read_tail` работает с любым объектом, у которого есть `get_messages(session_id, latest, limit, offset)`.
 """
 

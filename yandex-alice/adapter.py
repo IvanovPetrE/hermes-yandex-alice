@@ -2,7 +2,7 @@
 
 Вся логика — в чистых модулях: `entry` (проверки входа), `engine` (исполнение действий `dialog.step`), `sends` (правило
 итога S1), `history`, `cron_guard`. Здесь только то, что требует Hermes или aiohttp: loopback-listener, события хода,
-чтение истории (`SessionDB`) и хук cron. Импорты из Hermes — только из `public-api.md`; `os.environ` не читается.
+чтение истории (хранилище Hermes, `open_persistence_reader`) и хук cron. Импорты из Hermes — только из `public-api.md`; `os.environ` не читается.
 
 Модель по пробам: S5 (жизненный цикл, занятый порт, события хода), S6 (хук `pre_tool_call`, `validate_config`), S7 (чтение
 истории в рабочем потоке), S3 (Telegram: свой `PlatformConfig` с токеном бота своего профиля, отправка в копии контекста
@@ -64,6 +64,20 @@ def _turn_key(message_id) -> str:
     """Ход для книги карточек: по `message_id` хода (у внутреннего хода — None), а не по экземпляру адаптера — ключ
     совпадает и после переподключения."""
     return f"turn:{message_id}"
+
+
+class _Transcript:
+    """Расшифровка сессии из хранилища Hermes в виде, который ждёт `history.read_tail`: `get_messages(...)` → строки-словари
+    (`as_wire_row()` — прежний формат `SessionDB.get_messages`: `role`, `content`, `tool_calls`, `_compressed_summary`)."""
+
+    def __init__(self, store) -> None:
+        self._store = store
+
+    def get_messages(self, session_id, *, latest=False, limit=None, offset=0):
+        from persistence.conversation.messages import TranscriptRead
+
+        request = TranscriptRead(limit=limit, offset=offset, latest=latest)
+        return [row.as_wire_row() for row in self._store.messages.read_transcript(session_id, request)]
 
 
 def _hermes_deny(session_key: str, request_id: str, reason: str) -> int:
@@ -498,7 +512,7 @@ class AliceAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="approval card not delivered")
         return SendResult(success=True, message_id=card_id)
 
-    # --- история Hermes («повтори», S7) ----------------------------------------------------------------------------
+    # --- история Hermes («повтори», S7; хранилище v0.23.3 — HERMESYAND-38) -------------------------------------------
 
     def _resolve_db_path(self) -> Path:
         """Путь к state.db целевого профиля: маршрут `yandex_alice` без различителей → дом профиля. `profiles/<имя>` —
@@ -519,30 +533,27 @@ class AliceAdapter(BasePlatformAdapter):
         return await asyncio.to_thread(self._read_history, conversation)
 
     def _read_history(self, conversation: str):
-        """`(исход, текст)` в рабочем потоке: одно чтение за раз; ручка `SessionDB` закрывается в `finally`."""
+        """`(исход, текст)` в рабочем потоке: одно чтение за раз. Хранилище Hermes (v0.23.3+) — только на чтение:
+        `open_persistence_reader` ничего не создаёт и не мигрирует; ручка закрывается на выходе из `with`."""
         if not self._read_lock.acquire(blocking=False):
             return dialog.RECALL_ERROR, None
-        handle = None
         try:
             if self._db_path is None:
                 self._db_path = self._resolve_db_path()
             if not self._db_path.exists():
                 return dialog.RECALL_ERROR, None
-            from hermes_state import SessionDB
+            from persistence_assembly import open_persistence_reader
 
-            handle = SessionDB(self._db_path, read_only=True)
-            sid = handle.find_session_by_origin(platform=PLATFORM, chat_id=str(conversation))
-            if sid is None:
-                return dialog.RECALL_MISSING, None
-            text, _ = history.read_tail(handle, handle.resolve_resume_session_id(sid))
+            with open_persistence_reader(self._db_path) as store:
+                sid = store.routing.session_for_origin(platform=PLATFORM, chat_id=str(conversation))
+                if sid is None:
+                    return dialog.RECALL_MISSING, None
+                text, _ = history.read_tail(_Transcript(store), store.lineage.resolve_resume_target(sid))
             return dialog.RECALL_FOUND, text
         except Exception as exc:  # noqa: BLE001 - только класс; текст истории в логи не пишем
             logger.warning("history read failed: %s", type(exc).__name__)
             return dialog.RECALL_ERROR, None
         finally:
-            if handle is not None:
-                with contextlib.suppress(Exception):
-                    handle.close()
             self._read_lock.release()
 
     # --- то, что платформе не нужно --------------------------------------------------------------------------------
