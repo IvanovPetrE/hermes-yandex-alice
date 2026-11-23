@@ -198,7 +198,7 @@ settings) -> (state, actions)`, состояние — неизменяемые 
   `connect()` (маршрут `yandex_alice` из `load_gateway_config().profile_routes`, дом `…/profiles/<имя>`); на чтении —
   `SessionDB(read_only=True)` → `find_session_by_origin` → `resolve_resume_session_id` → `get_messages` порциями по 20; правило
   «последнего ответа» (`last_answer`, `read_tail`, `pick_profile`) — **в чистый модуль** (`yandex-alice/history.py`, без Hermes,
-  с тестами; **перенесено срезом «а»**) из пробы S7 (`prototypes/s7/plugin/history.py`, удалена, версия `6af233e`); `/proc` не читать; текст из истории в логи не писать.
+  с тестами; **перенесено срезом «а»**) из пробы S7 (`prototypes/s7/plugin/history.py`, удалена, версия `bf437ef`); `/proc` не читать; текст из истории в логи не писать.
 - По S6 (`docs/RECON.md`, «S6» → «Выводы»): `platform_hint` — правило `deliver=telegram:<чат>` для cron;
   хук `pre_tool_call` на `cronjob_manage` по `cron_guard.guard_args` (перенос из `prototypes/s6/plugin/` с
   `GuardTests`; **перенесено срезом «а»**) — раскладка A2 решена 2026-11-16 (S6b), хук без условий; инвариант хука — никогда не

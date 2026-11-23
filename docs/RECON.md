@@ -187,14 +187,14 @@ Completions; плагинная платформа получает сессию
 ## S1: финальность и привязка ответа — вердикт PARTIAL (2026-11-14)
 
 Вопрос: может ли плагинная платформа отличить итог хода от промежуточных отправок и узнать, что ход
-закончился. Проба — `prototypes/s1/` (удалена на этапе 6, последняя версия — коммит `479d4d1`, `git show 479d4d1:prototypes/s1/README.md`;
+закончился. Проба — `prototypes/s1/` (удалена на этапе 6, последняя версия — коммит `af0a81d`, `git show af0a81d:prototypes/s1/README.md`;
 случаи S1 теперь проверяет `compat/` на нашем адаптере): настоящий `GatewayRunner` с заглушкой-адаптером, которая
 зарегистрирована как `ctx.register_platform` (`PlatformEntry(source="plugin", display_tier="minimal")`,
 `SUPPORTS_MESSAGE_EDITING=False`), агент — скриптованный LLM из `tests/fakes/fake_llm_provider.py`
 Hermes; модели, ключей и расходов нет. Проверено против checkout `3b42157858` (v0.23.1).
 
 Результат прогона пробы: группа A — 14 тестов OK (6 из них — правило без Hermes), группа B — 4 теста OK.
-Запуск пробы — по `run.sh` из коммита `479d4d1`; `python` окружения зависимостей Hermes — см. `compat/README.md`.
+Запуск пробы — по `run.sh` из коммита `af0a81d`; `python` окружения зависимостей Hermes — см. `compat/README.md`.
 Группа A — уровень `minimal`, глобальный стриминг включён, `busy_input_mode: interrupt`; группа B —
 переопределения оператора (`display.tool_progress: all`, `display.interim_assistant_messages: true`,
 `busy_input_mode: queue`). Проба сверяет действующие значения до сценариев. Пиковый RSS процесса — ~245 МБ.
@@ -282,7 +282,7 @@ for G in A1 A2 A2g A3 A4 A0 B; do bash "$D/s2/run.sh" <hermes-checkout> <depende
 rm -rf -- "$D"
 ```
 
-Контрольный прогон из коммита `558899d`: A1–A4, A2g — `Ran 8 tests … OK`, A0 и B — `Ran 2 tests … OK`;
+Контрольный прогон из коммита `f302841`: A1–A4, A2g — `Ran 8 tests … OK`, A0 и B — `Ran 2 tests … OK`;
 пиковый RSS 196–259 МБ. После него по ревью изменены только `timeout` в `run.sh` (900 → 1200 с) и
 отказ стража при пустом `HERMES_HOME` — сценарии и утверждения те же, повторно не прогонялось.
 
@@ -369,7 +369,7 @@ bash "$D/s3/run.sh" <hermes-checkout> <dependency-venv-python>   # Ran 24 tests 
 rm -rf -- "$D"
 ```
 
-Прогон из коммита `ef965cb`: `Ran 24 tests in 40.114s OK`, пиковый RSS 130 МБ, 41 с.
+Прогон из коммита `b48005b`: `Ran 24 tests in 40.114s OK`, пиковый RSS 130 МБ, 41 с.
 
 ### Чей токен уходит
 
@@ -484,7 +484,7 @@ for G in A B C; do bash "$D/s4/run.sh" <hermes-checkout> <dependency-venv-python
 rm -rf -- "$D"
 ```
 
-Прогон из коммита `5312196`: A — `Ran 33 tests in 94.668s OK` (17 `BookTests` + 16 со шлюзом), B —
+Прогон из коммита `e27df49`: A — `Ran 33 tests in 94.668s OK` (17 `BookTests` + 16 со шлюзом), B —
 `Ran 2 tests … OK`, C — `Ran 3 tests … OK`. Пиковый RSS 274–310 МБ (шлюз с двумя PTB-приложениями — ~300 МБ
 уже при старте; предел сторожа 400 МБ). `BookTests` — без Hermes: `cd prototypes/s4 && python -m unittest
 probe_s4 -k BookTests` (Python 3.13/3.14; на 3.11 не гонялись). `hermes plugins validate` (через
@@ -599,7 +599,7 @@ probe_s4 -k BookTests` (Python 3.13/3.14; на 3.11 не гонялись). `her
 ## S5: жизненный цикл адаптера и перезапуск шлюза — вердикт PARTIAL (2026-11-16)
 
 > **2026-11-18:** сцены L1–L6, P1–P2, R1–R6 перенесены в тесты совместимости `compat/` на настоящем адаптере (Hermes v0.23.2,
-> группы `L`, `R`, `T`; `docs/compatibility.md`), проба `prototypes/s5/` удалена (последняя версия — коммит `6af233e`). Ниже —
+> группы `L`, `R`, `T`; `docs/compatibility.md`), проба `prototypes/s5/` удалена (последняя версия — коммит `bf437ef`). Ниже —
 > описание пробы как было. Расхождения с v0.23.1: при штатной остановке хук завершения первого запуска приходит с исходом
 > `success`, а не `cancelled`; адаптер на нём закрывает вопрос (см. [ограничения совместимости](compatibility.md#ограничения)).
 > D1/D2 (`interactive_resume=True`) для адаптера недостижимы. Леджер без пометки по-прежнему не воспроизведён.
@@ -623,7 +623,7 @@ for G in A B C D; do bash "$D/s5/run.sh" <hermes-checkout> <dependency-venv-pyth
 case "$D" in /tmp/hya-s5-*) rm -rf -- "$D" ;; esac
 ```
 
-Контрольный прогон из коммита `17ebebb`: A `Ran 18 tests … OK` (38 с), B `Ran 6 … OK` (100 с), C `Ran 7 … OK` (143 с),
+Контрольный прогон из коммита `8cf4d91`: A `Ran 18 tests … OK` (38 с), B `Ran 6 … OK` (100 с), C `Ran 7 … OK` (143 с),
 D `Ran 3 … OK` (55 с); суммарный RSS пробы и шлюза 272–304 МБ (проба ~27 МБ); `plugins validate` без
 предупреждений. Группы: A — L1–L6 и R6; B — занятый порт (логи DEBUG); C — R1–R5 при `interactive_resume=false`
 и `gateway_restart_notification: false`; D — R1/R2 при настройках Hermes по умолчанию.
@@ -764,7 +764,7 @@ for G in A B C; do bash "$D/s6/run.sh" <hermes-checkout> <dependency-venv-python
 case "$D" in /tmp/hya-s6-*) rm -rf -- "$D" ;; esac
 ```
 
-Контрольный прогон из коммита `7349c33`: A `Ran 28 tests in 212.663s OK` (15 чистых `GuardTests`/`ForwardTests` +
+Контрольный прогон из коммита `6f0ef92`: A `Ran 28 tests in 212.663s OK` (15 чистых `GuardTests`/`ForwardTests` +
 13 со шлюзом), B `Ran 7 tests in 163.787s OK`, C `Ran 3 tests in 23.903s OK`; пиковый RSS 286–295 МБ. Чистый слой —
 без Hermes: `cd prototypes/s6 && python -m unittest probe_s6 -k GuardTests -k ForwardTests`.
 
@@ -868,7 +868,7 @@ for G in B C; do bash "$D/s6b/run.sh" <hermes-checkout> <dependency-venv-python>
 case "$D" in /tmp/hya-s6b-*) rm -rf -- "$D" ;; esac
 ```
 
-Контрольный прогон из коммита `6791921`: B `Ran 7 tests in 172.006s OK` (пик RSS 288 МБ), C `Ran 5 tests in 26.510s OK`
+Контрольный прогон из коммита `b70bbd1`: B `Ran 7 tests in 172.006s OK` (пик RSS 288 МБ), C `Ran 5 tests in 26.510s OK`
 (284 МБ).
 
 | Сцена | Результат |
@@ -887,7 +887,7 @@ case "$D" in /tmp/hya-s6b-*) rm -rf -- "$D" ;; esac
 **Группа L — одна копия плагина (симлинк), 2026-11-16.** Как B, но `p2/plugins/<плагин>` — симлинк на каталог плагина в
 профиле по умолчанию (совет самого Hermes для разработки на месте, `hermes_cli/plugin_dev.py`; обнаружение идёт по ссылке —
 `scan_directory`, `child.is_dir()`). Запуск — `bash "$D/s6b/run.sh" <hermes-checkout> <dependency-venv-python> L`; контроль
-из `14d610b`: `Ran 7 tests in 172.697s OK`, пик RSS 283–290 МБ.
+из `88a9e8c`: `Ran 7 tests in 172.697s OK`, пик RSS 283–290 МБ.
 
 | Сцена | Результат |
 |---|---|
@@ -932,7 +932,7 @@ case "$D" in /tmp/hya-s6b-*) rm -rf -- "$D" ;; esac
 ## S7: `hermes_state` как источник «повтори» — вердикт PARTIAL (2026-11-17)
 
 > **2026-11-18:** сцены A0–A2, A4–A6, B1–B3, C1, время чтения перенесены в тесты `compat/` на настоящем адаптере (v0.23.2,
-> группы `H`, `N`, `Z`, `R`; `docs/compatibility.md`), проба `prototypes/s7/` удалена (последняя версия — коммит `6af233e`).
+> группы `H`, `N`, `Z`, `R`; `docs/compatibility.md`), проба `prototypes/s7/` удалена (последняя версия — коммит `bf437ef`).
 > Новое: итог автопродолжения читается из истории; сбой провайдера пишет в историю английский текст «Your request was not
 > processed…», который адаптер не считает ошибкой шлюза (см. [ограничения совместимости](compatibility.md#ограничения)). Чтение во
 > время идущего хода и запись `Operation interrupted…` через голос недостижимы по построению (пока вопрос в работе, «повтори»
@@ -954,11 +954,11 @@ for G in A B C; do bash "$D/s7/run.sh" <hermes-checkout> <dependency-venv-python
 case "$D" in /tmp/hya-s7-*) rm -rf -- "$D" ;; esac
 ```
 
-Контрольные прогоны: A (`07a860f`) `Ran 25 tests in 136.546s OK`, B (`07a860f`) `Ran 5 tests in 292.348s OK`, C (`2262c21`)
+Контрольные прогоны: A (`358b49c`) `Ran 25 tests in 136.546s OK`, B (`358b49c`) `Ran 5 tests in 292.348s OK`, C (`6699b25`)
 `Ran 3 tests in 67.796s OK`; пиковый суммарный RSS пробы и шлюза 231–265 МБ. Чистый слой — без Hermes:
-`cd prototypes/s7 && python -m unittest probe_s7 -k HistoryTests` (12 тестов). Первый прогон A (`e2b13ee`) шторм просрочек
-не измерил (ошибка пробы, исправлена в `2262c21`); прогон B на `2262c21` показал просрочку первого чтения после `SIGKILL`
-(1,5 с), которая после определения пути в `connect()` не повторилась (`07a860f`: первое чтение после `SIGKILL` 47 мс,
+`cd prototypes/s7 && python -m unittest probe_s7 -k HistoryTests` (12 тестов). Первый прогон A (`3162d95`) шторм просрочек
+не измерил (ошибка пробы, исправлена в `6699b25`); прогон B на `6699b25` показал просрочку первого чтения после `SIGKILL`
+(1,5 с), которая после определения пути в `connect()` не повторилась (`358b49c`: первое чтение после `SIGKILL` 47 мс,
 второе 6 мс) — причина просрочки не установлена (сервер был под давлением: `available` 66–130 МБ, `load1` до 3,0).
 
 ### Цепочка чтения (что работает)
@@ -1028,7 +1028,7 @@ case "$D" in /tmp/hya-s7-*) rm -rf -- "$D" ;; esac
 - Р-S7-2: чтение со сроком; срок вышел — «Не получилось…»; поздний `Recalled` гасится.
 - Р-S7-3: нет текста ответа, а итог был, — «Не получилось…»; итога не было — «Пока нечего повторить.».
 - Р-S7-4/5: заглушка `(empty)` из истории — ошибка шлюза по форме, «повтори» говорит «Не получилось, попробуйте ещё раз.»
-  (`protocol.is_gateway_error`, коммит `874d6ab`).
+  (`protocol.is_gateway_error`, коммит `526f889`).
 - Р-S7-6: запись прерванного хода `Operation interrupted…` (префиксы `Operation interrupted:`, `Operation interrupted during `,
   `Operation interrupted.` в начале текста) — тоже ошибка шлюза по форме; если автопродолжение потом даст настоящий ответ,
   он станет новой последней строкой и прочитается.
@@ -1054,7 +1054,7 @@ case "$D" in /tmp/hya-s7-*) rm -rf -- "$D" ;; esac
 - Итог автопродолжения после остановки посреди хода и результат `action=run` (внутренний ход) в историю голосовой сессии —
   не подтверждены (см. B2).
 - Раскладка A2 (плагин ещё и в области целевого профиля, симлинк) для чтения истории не проверялась: адаптер один и читает так же.
-- Просрочка 1,5 с у первого чтения после `SIGKILL` (прогон B на `2262c21`) не объяснена.
+- Просрочка 1,5 с у первого чтения после `SIGKILL` (прогон B на `6699b25`) не объяснена.
 - Обвязка опирается на `gateway.run.GatewayRunner`, `hermes_logging`, `tests.fakes.*`, чтение `state.db` через `sqlite3` и
   приватные атрибуты runner'а — только в пробе.
 
