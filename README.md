@@ -10,6 +10,8 @@
 
 Статус: бета. Приватный навык, один владелец. Проверенная версия Hermes указана в [документации по совместимости](docs/compatibility.md).
 
+English: [yandex-alice/README.md](yandex-alice/README.md) — overview, requirements and disclosure.
+
 ## Возможности
 
 - Голосовые ответы по частям, «дальше» читает следующую часть.
