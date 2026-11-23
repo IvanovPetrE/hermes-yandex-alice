@@ -36,10 +36,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: NousResearch/hermes-agent
-          ref: v0.23.2
+          ref: v0.23.3
           path: hermes
       - name: Pinned revision
-        run: test "$(git -C hermes rev-parse HEAD)" = "ae2a81ccc00e9b7c06301523e5bb09608397149c"
+        run: test "$(git -C hermes rev-parse HEAD)" = "caafe5389ae585ef77387a962aee05b1bcf17029"
       - uses: astral-sh/setup-uv@v5
       - name: Hermes dependencies
         working-directory: hermes
