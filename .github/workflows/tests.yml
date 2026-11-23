@@ -43,6 +43,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - name: Hermes dependencies
         working-directory: hermes
-        run: uv sync --locked --python 3.14 --extra all
+        # messaging (python-telegram-bot) вынесен из `all` (lazy-install), а run.sh отключает ленивую установку.
+        run: uv sync --locked --python 3.14 --extra all --extra messaging
       - name: Compatibility tests
         run: bash compat/run.sh hermes hermes/.venv/bin/python ${{ matrix.group }}
